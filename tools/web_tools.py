@@ -16,6 +16,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract)
+- Brave Search LLM Context: https://brave.com/search/api/ (search)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -149,7 +150,17 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {
+        "parallel",
+        "firecrawl",
+        "tavily",
+        "exa",
+        "searxng",
+        "brave-free",
+        "brave-llm-context",
+        "ddgs",
+        "xai",
+    }:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -167,6 +178,7 @@ def _get_backend() -> str:
         ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("brave-llm-context", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
@@ -227,6 +239,8 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
+        return _has_env("BRAVE_SEARCH_API_KEY")
+    if backend == "brave-llm-context":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
@@ -289,6 +303,7 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "BRAVE_SEARCH_API_KEY",
     ]
 
 
@@ -758,8 +773,9 @@ def clean_base64_images(text: str) -> str:
 def _ensure_web_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery so the web registry is populated.
 
-    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
-    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    Every bundled web provider (brave-free, brave-llm-context, ddgs, searxng,
+    exa, parallel, tavily, firecrawl) registers itself via
+    ``plugins/web/<vendor>/__init__.py``
     during plugin discovery. Tool dispatch can be reached from contexts that
     haven't already triggered discovery — subprocess agent runs, delegate
     children, standalone scripts, certain test paths — and without it the
@@ -841,7 +857,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
 
         # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # (brave-free, brave-llm-context, ddgs, searxng, exa, parallel,
+        # tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
@@ -978,8 +995,9 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # All bundled providers (brave-free, brave-llm-context, ddgs,
+            # searxng, exa, parallel, tavily, firecrawl) now live as plugins.
+            # The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
@@ -994,8 +1012,9 @@ async def web_extract_tool(
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
+                # extract (search-only providers like brave-free /
+                # brave-llm-context / ddgs / searxng), surface that as a
+                # typed "search-only" error
                 # rather than silently switching backends. When the name
                 # isn't registered at all (typo / uninstalled plugin), fall
                 # through to the active-provider walk.
@@ -1185,11 +1204,31 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {
+        "exa",
+        "parallel",
+        "firecrawl",
+        "tavily",
+        "searxng",
+        "brave-free",
+        "brave-llm-context",
+        "ddgs",
+        "xai",
+    }:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in (
+            "exa",
+            "parallel",
+            "firecrawl",
+            "tavily",
+            "searxng",
+            "brave-free",
+            "brave-llm-context",
+            "ddgs",
+            "xai",
+        )
     )
 
 
@@ -1229,6 +1268,8 @@ if __name__ == "__main__":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
+        elif backend == "brave-llm-context":
+            print("   Using Brave Search LLM Context (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
         elif firecrawl_url_available:
