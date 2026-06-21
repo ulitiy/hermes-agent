@@ -72,6 +72,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_brave_llm_context_search_only_capability():
+    _ensure_plugins_loaded()
+    from agent.web_search_registry import get_provider
+
+    provider = get_provider("brave-llm-context")
+    assert provider is not None
+    assert provider.supports_search() is True
+    assert provider.supports_extract() is False
+
+
 class TestIsAvailable:
     """Each plugin's ``is_available()`` returns False without env config."""
 
