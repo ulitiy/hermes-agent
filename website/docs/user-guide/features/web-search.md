@@ -25,6 +25,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
+| **Brave Search LLM Context** | `BRAVE_SEARCH_API_KEY` | ✔ | — | Brave plan dependent |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
@@ -413,6 +414,11 @@ web:
 ```
 
 ### Per-capability configuration
+
+Brave's LLM Context endpoint is available as `web.search_backend: "brave-llm-context"`.
+It uses the same `BRAVE_SEARCH_API_KEY` as `brave-free`, returning normalized grounding
+snippets. It is search-only: pair it with a separate `web.extract_backend`.
+Key-only automatic selection remains `brave-free` for compatibility.
 
 Use different providers for search vs extract. This lets you combine free search (SearXNG) with a paid extract provider, or vice versa:
 

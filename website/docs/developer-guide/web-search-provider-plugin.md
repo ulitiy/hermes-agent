@@ -245,6 +245,7 @@ Declare a third-party plugin's own dependencies in its manifest or
 ## Reference implementations
 
 - **`plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
+- **`plugins/web/brave_llm_context/`** — Brave LLM Context grounding normalization; search-only with the same profile-scoped Brave credential.
 - **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
 - **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
 - **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
