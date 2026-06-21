@@ -333,7 +333,13 @@ class ACPClient:
         self.api_key, self.base_url = api_key or self.placeholder_model, base_url or self.marker_base_url
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or self._resolve_command()
-        self._acp_args = list(acp_args or args or self._resolve_args())
+        # Empty argv is intentional for bare-stdio transports such as codex-acp.
+        if acp_args is not None:
+            self._acp_args = list(acp_args)
+        elif args is not None:
+            self._acp_args = list(args)
+        else:
+            self._acp_args = list(self._resolve_args())
         # The session's workspace, not the process cwd: under the gateway every turn runs in
         # the daemon (or a managed worker) whose own cwd is unrelated to the client's.
         self._acp_cwd = str(Path(acp_cwd or resolve_agent_cwd()).resolve())
