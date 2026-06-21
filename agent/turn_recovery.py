@@ -814,6 +814,16 @@ def recover_after_classification(
     if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
         return True, recovered_with_pool
 
+    from agent.oauth_fallback_guard import _should_retry_primary_auth_before_fallback
+    if _should_retry_primary_auth_before_fallback(
+        agent, classified, status_code=status_code,
+        already_attempted=_retry.primary_auth_retry_before_fallback_attempted,
+    ):
+        _retry.primary_auth_retry_before_fallback_attempted = True
+        agent._buffer_status("🔐 Authentication failed after refresh — retrying primary once before fallback...")
+        time.sleep(1)
+        return True, recovered_with_pool
+
     if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):
         return True, recovered_with_pool
     return False, recovered_with_pool

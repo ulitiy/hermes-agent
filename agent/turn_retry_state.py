@@ -45,6 +45,7 @@ class TurnRetryState:
     # Credit-limited 402 ("can only afford N tokens") already retried with a lowered output cap.
     affordable_402_clamp_attempted: bool = False
     # Persistent 401/403 already escalated to the fallback chain once this attempt.
+    primary_auth_retry_before_fallback_attempted: bool = False
     auth_failover_attempted: bool = False
     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
     auto_recovery_cycles_used: int = 0

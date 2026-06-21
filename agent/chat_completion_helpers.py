@@ -2074,6 +2074,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.oauth_fallback_guard import _should_block_paid_oauth_auth_fallback
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
@@ -2081,13 +2082,20 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)
         fb = agent._fallback_chain[agent._fallback_index]
-        agent._fallback_index += 1
         fb_key = _fallback_entry_key(fb)
         if getattr(agent, "_unavailable_fallback_keys", None) is None:
             agent._unavailable_fallback_keys = set()
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        if _should_block_paid_oauth_auth_fallback(
+            agent, reason=reason,
+            current_provider=(getattr(agent, "provider", "") or "").strip().lower(),
+            fallback_provider=fb_provider,
+        ):
+            logger.warning("Suppressing paid fallback %s after persistent OAuth auth failure", fb_provider)
+            return False
+        agent._fallback_index += 1
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
             continue
 
