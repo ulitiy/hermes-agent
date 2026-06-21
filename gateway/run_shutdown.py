@@ -64,6 +64,9 @@ def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bo
             GATEWAY_SERVICE_RESTART_EXIT_CODE,
         )
         raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+    if runner._restart_requested and not getattr(runner, "_restart_detached", False):
+        logger.info("Exiting with code 1 so the service manager revives the requested restart.")
+        return False
     return True
 
 # Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to

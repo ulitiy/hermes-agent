@@ -26,6 +26,7 @@ from gateway.restart import (
 )
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
+from gateway.run_topic_behavior import GatewayTopicBehaviorMixin
 from hermes_cli.config import cfg_get, resolve_ephemeral_system_prompt_from_config
 from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
@@ -42,7 +43,7 @@ DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
 
-class GatewayConfigLoadersMixin:
+class GatewayConfigLoadersMixin(GatewayTopicBehaviorMixin):
     """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
 
     @staticmethod
@@ -186,6 +187,14 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        profile_name = self._load_source_profile(source)
+        if profile_name:
+            profile_effort = self._load_profile_reasoning_config(profile_name, model=model)
+            if profile_effort is not None:
+                return profile_effort
+        source_override = self._load_source_reasoning_config(source)
+        if source_override is not None:
+            return source_override
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:

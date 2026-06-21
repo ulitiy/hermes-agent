@@ -2439,7 +2439,9 @@ class GatewayTurnMixin:
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            turn_reasoning_mode, prompt = self._parse_turn_reasoning_prefix(prompt)
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
+            reasoning_config = self._apply_turn_reasoning_override(reasoning_config, turn_reasoning_mode)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)

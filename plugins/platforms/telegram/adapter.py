@@ -3305,6 +3305,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
             user_id = str(data.get("user_id") or chat_id)
             user_name = data.get("user_name") or "User"
+            thread_id = data.get("thread_id") or data.get("message_thread_id")
+            chat_type = data.get("chat_type") or ("group" if thread_id is not None else "dm")
 
             try:
                 event = self._build_synthetic_text_event(
@@ -3312,6 +3314,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     text=str(text),
                     user_id=user_id,
                     user_name=str(user_name),
+                    thread_id=str(thread_id) if thread_id is not None else None,
+                    chat_type=str(chat_type),
                 )
                 asyncio.create_task(self.handle_message(event))
             except Exception as e:
@@ -3338,15 +3342,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         text: str,
         user_id: str,
         user_name: str,
+        thread_id: Optional[str] = None,
+        chat_type: str = "dm",
     ) -> MessageEvent:
         """Build a MessageEvent for a synthetic injected message."""
         source = self.build_source(
             chat_id=chat_id,
             chat_name=user_name,
-            chat_type="dm",
+            chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
-            thread_id=None,
+            thread_id=thread_id,
             chat_topic=None,
             message_id=None,
         )

@@ -1850,6 +1850,11 @@ class TurnRunner:
         ):
             if extra:
                 combined = (combined + "\n\n" + extra).strip()
+        profile_name = self._runner._load_source_profile(ctx.source)
+        if profile_name:
+            soul = self._runner._load_profile_soul(profile_name)
+            if soul:
+                combined = (combined + f"\n\n## Active role profile: {profile_name}\n\n{soul}").strip()
         return combined
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:
@@ -1932,7 +1937,9 @@ class TurnRunner:
                 "messages": [], "api_calls": 0, "tools": [],
             }
         pr = runner._provider_routing
+        turn_reasoning_mode, ctx.message = runner._parse_turn_reasoning_prefix(ctx.message)
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
+        reasoning_config = runner._apply_turn_reasoning_override(reasoning_config, turn_reasoning_mode)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
