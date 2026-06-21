@@ -1179,6 +1179,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ):
             if extra:
                 combined = (combined + "\n\n" + extra).strip()
+        profile_name = self._runner._load_source_profile(ctx.source)
+        if profile_name:
+            soul = self._runner._load_profile_soul(profile_name)
+            if soul:
+                combined = (combined + f"\n\n## Active role profile: {profile_name}\n\n{soul}").strip()
         return combined
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:
@@ -1338,6 +1343,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
                 runner._service_tier = tier
+        turn_reasoning_mode, ctx.message = runner._parse_turn_reasoning_prefix(ctx.message)
+        reasoning_config = runner._apply_turn_reasoning_override(reasoning_config, turn_reasoning_mode)
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)

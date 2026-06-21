@@ -1489,13 +1489,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
+        """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
         from gateway.bot_peer_notices import automatic_notices_allowed
-        for tx in transcripts if automatic_notices_allowed(source) else ():
-            try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+        if not automatic_notices_allowed(source):
+            return
+        try:
+            await adapter.send(source.chat_id, "\n".join(f"> 🎙 {tx}" for tx in transcripts), metadata=metadata)
+        except Exception as echo_exc:
+            logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+
 
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
