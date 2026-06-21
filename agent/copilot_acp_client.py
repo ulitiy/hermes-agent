@@ -291,7 +291,16 @@ class CopilotACPClient:
         self.api_key, self.base_url = api_key or "copilot-acp", base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        # Distinguish "not provided" (None) from "explicitly empty" ([]).
+        # codex-acp speaks ACP on bare stdio and is passed args=[], which is
+        # falsy — so an `or` chain would wrongly fall back to copilot's
+        # ["--acp","--stdio"]. Pick the first non-None value instead.
+        if acp_args is not None:
+            self._acp_args = list(acp_args)
+        elif args is not None:
+            self._acp_args = list(args)
+        else:
+            self._acp_args = list(_resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False

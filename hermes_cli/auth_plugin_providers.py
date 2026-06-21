@@ -58,6 +58,8 @@ def register_plugin_provider(pp: Any) -> None:
         pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, *_api_key_env_fields(pp))
     else:
         pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
+        if pp.auth_type == "external_process":
+            pconfig.base_url_env_var = next((v for v in pp.env_vars if v.endswith("_BASE_URL")), "")
     PROVIDER_REGISTRY[pp.name] = pconfig
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
     mirror_aliases(pconfig, pp)
