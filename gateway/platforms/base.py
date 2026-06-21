@@ -3436,6 +3436,9 @@ class BasePlatformAdapter(ABC):
         if emoji:
             await add(chat_id, message_id, emoji)
 
+    def _on_final_response_sent(self, event, session_key, result, text_content) -> None:
+        """Optional adapter feedback index; called on the transport owning the message id."""
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -4301,6 +4304,10 @@ class BasePlatformAdapter(ABC):
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        try:
+            delivery_adapter._on_final_response_sent(event, session_key, result, text_content)
+        except Exception:
+            logger.debug("Outbound-message indexing failed", exc_info=True)
         return result, delivery_adapter
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
