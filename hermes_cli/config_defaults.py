@@ -882,6 +882,9 @@ DEFAULT_CONFIG = {
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
         "file_mutation_verifier": True,
+        # One recovery attempt before accepting an answer with unresolved edits,
+        # independent of the user-visible verifier footer.
+        "file_mutation_auto_recovery": True,
         # Nous credits status-bar notices (usage bands, grant-spent, depleted/restored). False mutes
         # them; balance data and /usage keep working.
         "credits_notices": True,

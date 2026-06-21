@@ -49,6 +49,16 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
     return None
 
 
+def _file_mutation_recovery_nudge(agent) -> Optional[str]:
+    failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
+    if not failed or getattr(agent, "_file_mutation_recovery_attempts", 0) >= 1:
+        return None
+    if not agent._file_mutation_auto_recovery_enabled():
+        return None
+    failed = agent._file_mutations_still_failed(failed)
+    return agent._format_file_mutation_recovery_prompt(failed) or None
+
+
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     """After code edits a registered ``pre_verify`` hook may keep the agent going one
     more turn; no default continuation cost."""
@@ -128,6 +138,15 @@ def apply_stop_gates(
                 final_response or ""
             ),
         )
+
+    # Use the existing stop-gate continuation mechanism instead of resurrecting
+    # the former monolithic conversation loop. Do not emit the premature answer.
+    recovery = _file_mutation_recovery_nudge(agent)
+    if recovery and agent.iteration_budget.remaining > 0:
+        agent._file_mutation_recovery_attempts = 1
+        final_msg["_file_mutation_recovery_synthetic"] = True
+        append_message(messages, final_msg)
+        return _continue(recovery, "_file_mutation_recovery_synthetic")
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:

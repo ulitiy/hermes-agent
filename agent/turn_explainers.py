@@ -184,6 +184,36 @@ class TurnExplainersMixin:
             cache_attr="_file_mutation_verifier_enabled_cache",
         )
 
+    def _file_mutation_auto_recovery_enabled(self) -> bool:
+        """Recovery is independent of the optional user-visible failure footer."""
+        return _display_flag_enabled(
+            self, env_var="HERMES_FILE_MUTATION_AUTO_RECOVERY", config_key="file_mutation_auto_recovery",
+            cache_attr="_file_mutation_auto_recovery_enabled_cache",
+        )
+
+    @classmethod
+    def _format_file_mutation_recovery_prompt(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+        """Bounded recovery guidance for the turn-end verification gate."""
+        if not failed:
+            return ""
+        lines = [
+            "File-mutation verifier detected unresolved write_file/patch failures. "
+            "Do NOT claim the task is complete yet. First re-read the relevant file(s), "
+            "adjust the patch/write, and rerun the appropriate tool. "
+            "A denied or timed-out approval is final for this turn: never retry or bypass it. "
+            "If the target is protected, cross-profile, credential-like, or needs a human "
+            "decision, ask the user for approval/decision in one concise message. "
+            "Do not add a generic verifier warning footer. Failed mutations:"
+        ]
+        shown = list(failed.items())[:10]
+        for path, info in shown:
+            preview = (info.get("error_preview") or "").strip()
+            lines.append(f"- {path} — [{info.get('tool') or 'patch'}] {preview or 'failed'}")
+        remaining = len(failed) - len(shown)
+        if remaining > 0:
+            lines.append(f"- … and {remaining} more")
+        return "\n".join(lines)
+
     def _turn_completion_explainer_enabled(self) -> bool:
         """``display.turn_completion_explainer`` / ``HERMES_TURN_COMPLETION_EXPLAINER``."""
         return _display_flag_enabled(
