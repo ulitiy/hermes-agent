@@ -1491,10 +1491,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> None:
         """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
         from gateway.bot_peer_notices import automatic_notices_allowed
-        if not automatic_notices_allowed(source):
+        if not transcripts or not automatic_notices_allowed(source):
             return
         try:
-            await adapter.send(source.chat_id, "\n".join(f"> 🎙 {tx}" for tx in transcripts), metadata=metadata)
+            await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
         except Exception as echo_exc:
             logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
