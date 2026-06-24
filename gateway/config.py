@@ -694,7 +694,11 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    # Optional user-visible transcript echo before the agent reply. Defaults off
+    # because many profiles already quote voice transcripts in the final answer;
+    # enabling both paths shows duplicate transcript text to the user.
+    stt_send_transcription: bool = False
+    stt_send_transcription_header: str = ""
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -819,7 +823,8 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
-            "stt_echo_transcripts": self.stt_echo_transcripts,
+            "stt_send_transcription": self.stt_send_transcription,
+            "stt_send_transcription_header": self.stt_send_transcription_header,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -867,16 +872,22 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        raw_stt_cfg = data.get("stt")
+        stt_cfg: Dict[str, Any] = raw_stt_cfg if isinstance(raw_stt_cfg, dict) else {}
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
-            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
-        stt_echo_transcripts = data.get("stt_echo_transcripts")
-        if stt_echo_transcripts is None:
-            stt_echo_transcripts = (
-                data.get("stt", {}).get("echo_transcripts")
-                if isinstance(data.get("stt"), dict)
-                else None
-            )
+            stt_enabled = stt_cfg.get("enabled")
+        stt_send_transcription = data.get("stt_send_transcription")
+        if stt_send_transcription is None:
+            stt_send_transcription = stt_cfg.get("send_transcription")
+        # Backward-compatible aliases from the earlier echo_transcripts name.
+        if stt_send_transcription is None:
+            stt_send_transcription = data.get("stt_echo_transcripts")
+        if stt_send_transcription is None:
+            stt_send_transcription = stt_cfg.get("echo_transcripts")
+        stt_send_transcription_header = data.get("stt_send_transcription_header")
+        if stt_send_transcription_header is None:
+            stt_send_transcription_header = stt_cfg.get("send_transcription_header")
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -933,7 +944,8 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
-            stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
+            stt_send_transcription=_coerce_bool(stt_send_transcription, False),
+            stt_send_transcription_header=str(stt_send_transcription_header or ""),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
@@ -1036,8 +1048,12 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
-            if "stt_echo_transcripts" in yaml_cfg:
-                gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
+            if "stt_send_transcription" in yaml_cfg:
+                gw_data["stt_send_transcription"] = yaml_cfg["stt_send_transcription"]
+            elif "stt_echo_transcripts" in yaml_cfg:
+                gw_data["stt_send_transcription"] = yaml_cfg["stt_echo_transcripts"]
+            if "stt_send_transcription_header" in yaml_cfg:
+                gw_data["stt_send_transcription_header"] = yaml_cfg["stt_send_transcription_header"]
 
             gateway_cfg = yaml_cfg.get("gateway")
 

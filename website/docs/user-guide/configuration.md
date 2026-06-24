@@ -1556,8 +1556,9 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 ```yaml
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
-  echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  send_transcription: false     # Optional separate transcript echo before the agent reply
+  send_transcription_header: "" # Optional prefix for that separate echo
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
@@ -1565,7 +1566,7 @@ stt:
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
+`send_transcription` is off by default. Leave it off when your assistant persona already quotes voice input in the final answer; enable it only if you want a separate immediate transcript-audit message before the agent replies. Older `stt.echo_transcripts` / `stt_echo_transcripts` config keys are still accepted as compatibility aliases.
 
 Provider behavior:
 
