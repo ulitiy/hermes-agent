@@ -1488,16 +1488,17 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
+    ) -> bool:
         """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
         from gateway.bot_peer_notices import automatic_notices_allowed
         if not transcripts or not automatic_notices_allowed(source):
-            return
+            return False
         try:
-            await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
+            result = await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
+            return bool(result.success)
         except Exception as echo_exc:
             logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
+            return False
 
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
@@ -1512,7 +1513,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _echo_adapter = self._delivery_adapter_for(source)
             if _echo_adapter:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
+                if await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta):
+                    message_text = self._append_voice_transcript_no_echo_instruction(message_text)
         return message_text
 
     @staticmethod

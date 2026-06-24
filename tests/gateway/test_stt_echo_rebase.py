@@ -27,10 +27,13 @@ async def test_echo_opt_in_survives_real_loader_and_pending_dedup(tmp_path, monk
     runner._thread_metadata_for_source = lambda *args: {"thread_id": "7"}
     runner._reply_anchor_for_event = lambda _: None
     runner._enrich_message_with_transcription = AsyncMock(return_value=('"hello"', ["hello"]))
-    await runner._enrich_inbound_voice(event, source, "", ["note.ogg"])
+    inbound = await runner._enrich_inbound_voice(event, source, "", ["note.ogg"])
     assert adapter.send.await_count == int(setting is True)
+    response = "> 🎙 hello\n\nAnswer"
+    assert runner._strip_leading_voice_transcript_from_response(response, inbound) == ("Answer" if setting else response)
     adapter.send.reset_mock()
-    await runner._transcribe_and_echo_pending_voice(event, adapter, source, "", log_context="test")
+    pending, _ = await runner._transcribe_and_echo_pending_voice(event, adapter, source, "", log_context="test")
+    assert runner._strip_leading_voice_transcript_from_response(response, pending) == ("Answer" if setting else response)
     await runner._transcribe_and_echo_pending_voice(event, adapter, source, "", log_context="test")
     assert adapter.send.await_count == int(setting is True)
     if setting:
