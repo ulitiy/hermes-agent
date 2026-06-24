@@ -1583,9 +1583,14 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
-    language_code = str(elevenlabs_config.get("language_code") or "").strip()
+    language_code = str(
+        elevenlabs_config.get("language_code")
+        or elevenlabs_config.get("language")
+        or ""
+    ).strip()
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
+    no_verbatim = is_truthy_value(elevenlabs_config.get("no_verbatim", False))
 
     try:
         import requests
@@ -1594,6 +1599,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
             "model_id": model_name,
             "tag_audio_events": "true" if tag_audio_events else "false",
             "diarize": "true" if diarize else "false",
+            "no_verbatim": "true" if no_verbatim else "false",
         }
         if language_code:
             data["language_code"] = language_code
@@ -1779,7 +1785,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "elevenlabs":
         elevenlabs_cfg = stt_config.get("elevenlabs") or {}
-        model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
+        model_name = (
+            model
+            or elevenlabs_cfg.get("model_id")
+            or elevenlabs_cfg.get("model", DEFAULT_ELEVENLABS_STT_MODEL)
+        )
         return _transcribe_elevenlabs(file_path, model_name)
 
     if provider == "deepinfra":
