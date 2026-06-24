@@ -1557,7 +1557,7 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
-  send_transcription: false     # Optional separate transcript echo before the agent reply
+  send_transcription: true      # Send transcript as a separate `> 🎙 ...` message before the agent reply
   send_transcription_header: "" # Optional prefix for that separate echo
   local:
     model: "base"              # tiny, base, small, medium, large-v3
