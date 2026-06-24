@@ -405,6 +405,25 @@ class GatewayVoiceMixin:
         header = str(getattr(self.config, "stt_send_transcription_header", "") or "")
         return header + "\n".join(f"> 🎙 {tx}" for tx in transcripts)
 
+    @staticmethod
+    def _append_voice_transcript_no_echo_instruction(text: str) -> str:
+        note = "[Voice transcript already delivered separately; answer without repeating the transcript.]"
+        return text if note in text else f"{text}\n\n{note}"
+
+    @staticmethod
+    def _strip_leading_voice_transcript_from_response(response: str, inbound_text: str) -> str:
+        # Only suppress a quote when the deterministic send actually succeeded.
+        if not isinstance(inbound_text, str) or "[Voice transcript already delivered separately;" not in inbound_text:
+            return response
+        text = response.lstrip()
+        while text.startswith("> 🎙 "):
+            quote, sep, rest = text.partition("\n")
+            transcript = quote.removeprefix("> 🎙 ").strip()
+            if not transcript or transcript not in inbound_text:
+                break
+            text = rest.lstrip() if sep else ""
+        return text
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /

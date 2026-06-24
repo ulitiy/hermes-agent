@@ -1504,14 +1504,16 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
+    ) -> bool:
         """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
         if not transcripts:
-            return
+            return False
         try:
-            await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
+            result = await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
+            return bool(result.success)
         except Exception as echo_exc:
             logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+            return False
 
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
@@ -1526,7 +1528,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             _echo_adapter = self._delivery_adapter_for(source)
             if _echo_adapter:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
+                if await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta):
+                    message_text = self._append_voice_transcript_no_echo_instruction(message_text)
         return message_text
 
     @staticmethod
@@ -2021,10 +2024,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
             return
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
-        await self._echo_stt_transcripts(
+        if await self._echo_stt_transcripts(
             adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
-        )
+        ):
+            event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
 
     async def _transcribe_and_echo_pending_voice(
         self, event, adapter, source, text: str, *, log_context: str, metadata=_UNSET
@@ -2041,6 +2044,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             await self._echo_pending_stt_transcripts_once(
                 event, adapter, source, transcripts, metadata=metadata, log_context=log_context
             )
+            if transcripts and getattr(event, "_gateway_pending_stt_echoed", 0) >= len(transcripts):
+                enriched_text = self._append_voice_transcript_no_echo_instruction(enriched_text or text)
             return enriched_text or text, transcripts
         except Exception as trans_exc:
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
