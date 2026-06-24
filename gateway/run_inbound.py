@@ -1506,8 +1506,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
         """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
+        if not transcripts:
+            return
         try:
-            await adapter.send(source.chat_id, "\n".join(f"> 🎙 {tx}" for tx in transcripts), metadata=metadata)
+            await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
         except Exception as echo_exc:
             logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 

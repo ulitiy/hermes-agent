@@ -2435,7 +2435,8 @@ Direct OpenAI API requests and custom proxy endpoints are unchanged.
 ```yaml
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
-  echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
+  send_transcription: false    # Opt-in separate > 🎙 transcript audit message
+  send_transcription_header: "" # Optional prefix for that message
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
   streaming: false             # live partial text while you speak (openai, xai, elevenlabs); see Voice Mode > Live transcription
@@ -2469,7 +2470,7 @@ Language resolution is the same for **every** STT provider (local, groq, openai,
 
 `stt.openai.timeout` and `stt.openai.max_retries` shape the OpenAI-SDK transcription client that the `openai`, `groq` and `deepinfra` providers share (there are no per-provider siblings yet, and the SDK reads no environment variables for these). The defaults are `60` / `1` rather than the previous fixed 30 s / no retries because a self-hosted OpenAI-compatible endpoint can take longer than 30 s to load its model on the first request, which used to lose that voice message outright. The trade-off: an unreachable backend now holds a voice message for up to two attempts × the timeout before Hermes gives up; set `timeout: 30` and `max_retries: 0` for the old shape.
 
-Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
+Set `stt.send_transcription: true` to post transcripts separately before the reply. It defaults off to avoid duplicate quotes from voice-aware personas. The legacy `stt.echo_transcripts` key is accepted when `send_transcription` is unset.
 
 Provider behavior:
 

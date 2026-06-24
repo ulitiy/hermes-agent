@@ -396,7 +396,14 @@ class GatewayVoiceMixin:
         return not (is_voice_input and not already_sent)
 
     def _should_echo_stt_transcripts(self) -> bool:
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+        return self._should_send_stt_transcription_echo()
+
+    def _should_send_stt_transcription_echo(self) -> bool:
+        return bool(getattr(self.config, "stt_send_transcription", False))
+
+    def _format_stt_transcription_echo(self, transcripts: list[str]) -> str:
+        header = str(getattr(self.config, "stt_send_transcription_header", "") or "")
+        return header + "\n".join(f"> 🎙 {tx}" for tx in transcripts)
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool

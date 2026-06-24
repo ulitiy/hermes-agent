@@ -598,7 +598,8 @@ class GatewayConfig:
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
+    stt_send_transcription: bool = False  # Separate transcript audit is opt-in
+    stt_send_transcription_header: str = ""
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
@@ -645,7 +646,7 @@ class GatewayConfig:
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
-        "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+        "stt_send_transcription", "stt_send_transcription_header", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
@@ -749,6 +750,10 @@ class GatewayConfig:
             value = data.get(flat_key)
             return _coerce_dict(data.get("stt")).get(nested_key) if value is None else value
 
+        send_transcription = stt_setting("stt_send_transcription", "send_transcription")
+        if send_transcription is None:
+            send_transcription = stt_setting("stt_echo_transcripts", "echo_transcripts")
+
         def bounded_float(key: str, default: float, lo: float, hi: float) -> float:
             # Out-of-range / non-finite watchdog knobs fall back to the shipped defaults.
             value = _coerce_float(pick(key), default)
@@ -798,7 +803,8 @@ class GatewayConfig:
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
-            stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
+            stt_send_transcription=_coerce_bool(send_transcription, False),
+            stt_send_transcription_header=str(stt_setting("stt_send_transcription_header", "send_transcription_header") or ""),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
