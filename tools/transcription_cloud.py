@@ -350,6 +350,7 @@ def _transcribe_elevenlabs(
             "model_id": model_name,
             "tag_audio_events": str(is_truthy_value(elevenlabs_config.get("tag_audio_events", False))).lower(),
             "diarize": str(is_truthy_value(elevenlabs_config.get("diarize", False))).lower(),
+            "no_verbatim": str(is_truthy_value(elevenlabs_config.get("no_verbatim", False))).lower(),
             **({"language_code": language_code} if language_code else {})}
         return _post_audio_multipart(f"{base_url}/speech-to-text", {"xi-api-key": api_key}, file_path, data)
 

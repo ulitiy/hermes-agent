@@ -492,6 +492,8 @@ def _builtin_model_name(provider: str, stt_config: dict[str, Any], model: Option
         return model
     section, key, default, empty_is_missing = _BUILTIN_MODEL_KEYS[provider]
     cfg = _get_stt_section(stt_config, section)
+    if provider == "elevenlabs":
+        return cfg.get("model_id") or cfg.get("model") or default
     resolved = (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
     return normalize_xai_stt_model(resolved) if provider == "xai" else resolved
 

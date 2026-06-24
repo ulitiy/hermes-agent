@@ -1060,6 +1060,7 @@ class TestTranscribeElevenLabs:
                 "language_code": "eng",
                 "tag_audio_events": True,
                 "diarize": True,
+                "no_verbatim": True,
             }
         }
         with patch("tools.transcription_tools._load_stt_config", return_value=config), \
@@ -1076,6 +1077,7 @@ class TestTranscribeElevenLabs:
         assert call_kwargs["data"]["language_code"] == "eng"
         assert call_kwargs["data"]["tag_audio_events"] == "true"
         assert call_kwargs["data"]["diarize"] == "true"
+        assert call_kwargs["data"]["no_verbatim"] == "true"
 
 # ============================================================================
 # _get_provider — ElevenLabs
@@ -1104,8 +1106,9 @@ class TestGetProviderElevenLabs:
 # ============================================================================
 
 class TestTranscribeAudioElevenLabsDispatch:
-    def test_config_elevenlabs_model_used(self, sample_ogg):
-        config = {"provider": "elevenlabs", "elevenlabs": {"model_id": "scribe_v1"}}
+    @pytest.mark.parametrize("model_key", ["model_id", "model"])
+    def test_config_elevenlabs_model_used(self, sample_ogg, model_key):
+        config = {"provider": "elevenlabs", "elevenlabs": {model_key: "scribe_v1"}}
         with patch("tools.transcription_tools._load_stt_config", return_value=config), \
              patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
              patch("tools.transcription_tools._transcribe_elevenlabs",
