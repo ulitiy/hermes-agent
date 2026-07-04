@@ -29,6 +29,7 @@ from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
+from gateway.run_new_session import GatewayNewSessionMixin
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayNewSessionMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -441,10 +442,15 @@ class GatewayTurnMixin:
                 )
                 return
         else:
-            # Internal wakes observe reset policy without counting as user activity, or periodic
-            # notifications keep the routing key alive across every daily/idle boundary.
+            # Only an actual user turn may opt into local time/always reset policy.
+            policy_kwargs = {}
+            if not getattr(event, "internal", False):
+                policy = await asyncio.to_thread(self._load_new_session_policy, source)
+                if policy.mode != "none":
+                    policy_kwargs["reset_policy"] = policy
             session_entry = await self.async_session_store.get_or_create_session(
                 source, touch_activity=not bool(getattr(event, "internal", False)),
+                **policy_kwargs,
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
@@ -463,6 +469,9 @@ class GatewayTurnMixin:
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
         """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
         a fresh one. Returns the (possibly switched) session entry."""
+        if session_entry.was_auto_reset:
+            await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
+            return session_entry
         binding = None
         try:
             if self._session_db:
@@ -546,6 +555,13 @@ class GatewayTurnMixin:
         from gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
         context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
+        local_policy = None
+        if reset_reason in {"always", "idle", "daily"}:
+            local_policy = await asyncio.to_thread(self._load_new_session_policy, source)
+            context_note = (
+                f"[System note: The user's explicit {reset_reason} session policy started a fresh conversation. "
+                "There is no prior context in this session.]"
+            )
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to
@@ -559,9 +575,16 @@ class GatewayTurnMixin:
 
         try:
             should_notify = reset_reason == "suspended"
+            if local_policy is not None:
+                should_notify = (
+                    local_policy.notify and session_entry.reset_had_activity
+                    and source.platform.value not in local_policy.notify_exclude_platforms
+                )
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
                 notice = t("gateway.session.auto_reset_notice")
+                if local_policy is not None:
+                    notice = f"◐ New session ({reset_reason} policy). Use /resume to restore a previous session."
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:
@@ -1953,8 +1976,18 @@ class GatewayTurnMixin:
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
+            if response and not _intentional_silence and not getattr(event, "internal", False):
+                await self._send_post_task_new_button_now(
+                    source=source, agent_result=agent_result,
+                    reply_to_message_id=self._reply_anchor_for_event(event),
+                )
             return None
 
+        if response and not _intentional_silence and not getattr(event, "internal", False):
+            self._register_post_task_new_button(
+                source=source, session_key=session_key, run_generation=run_generation,
+                agent_result=agent_result,
+            )
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own

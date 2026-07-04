@@ -89,9 +89,15 @@ class SessionLifecycleMixin:
             return False
         return row is None or row.get("end_reason") is not None
 
-    def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
-        """Only explicit suspension replaces a routed conversation; time never does."""
-        return "suspended" if entry.suspended else None
+    def _route_reset_reason(self, entry: SessionEntry, reset_policy=None) -> Optional[str]:
+        """Suspension always resets; local opt-in policy is supplied only at user-turn admission."""
+        if entry.suspended:
+            return "suspended"
+        if reset_policy is None or entry.resume_pending or entry.active_turn_token:
+            return None
+        if self._has_active_processes_safe(entry.session_key, context="local reset"):
+            return None
+        return reset_policy.reset_reason(entry.updated_at, _now())
 
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing

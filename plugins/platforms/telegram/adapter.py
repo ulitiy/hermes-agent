@@ -183,6 +183,7 @@ from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInbound
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.reaction_capture import TelegramReactionCaptureMixin
 from plugins.platforms.telegram.local_callbacks import TelegramLocalCallbacksMixin
+from plugins.platforms.telegram.new_session import TelegramNewSessionMixin
 from plugins.platforms.telegram.api_pacing import TelegramApiPacingMixin
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -514,7 +515,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramApiPacingMixin, TelegramLocalCallbacksMixin, TelegramReactionCaptureMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, TelegramApiPacingMixin, TelegramLocalCallbacksMixin, TelegramReactionCaptureMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -4841,6 +4842,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramApiPacingMixin, Telegram
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
+            ("ns:", self._handle_new_session_callback),
             ("ha:", self._handle_ack_alert_callback),
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
