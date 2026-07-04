@@ -12,6 +12,48 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramLocalCallbacksMixin:
+    async def _handle_plugin_callback_query(self, query, data, cb):
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if not has_hook("telegram_callback_query"):
+            return False
+        caller = getattr(query, "from_user", None)
+        message = getattr(query, "message", None)
+        user_name = cb["user_name"] or getattr(caller, "username", None)
+        try:
+            results = await asyncio.to_thread(
+                invoke_hook, "telegram_callback_query", callback_data=data,
+                user_id=str(getattr(caller, "id", "") or ""),
+                user_name=str(user_name).strip() if user_name else None,
+                **{key: str(cb[key]) if cb[key] is not None else None for key in ("chat_id", "chat_type", "thread_id")},
+                message_text=getattr(message, "text", None), adapter=self, raw_query=query,
+            )
+        except Exception:
+            logger.exception("telegram_callback_query hook failed")
+            return False
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "").strip().lower()
+            if action == "allow" or not (result.get("handled") or action in {"handled", "answer", "skip"}):
+                continue
+            answer = result.get("answer_text")
+            if answer is not False:
+                if answer is None:
+                    answer = result.get("text") if action == "answer" else "✓"
+                try:
+                    await query.answer(text=str(answer)[:200], show_alert=bool(result.get("show_alert", False)))
+                except Exception:
+                    logger.debug("Plugin callback answer failed", exc_info=True)
+            edit = result.get("edit_text")
+            if isinstance(edit, str):
+                markup = None if result.get("remove_keyboard", True) else getattr(message, "reply_markup", None)
+                try:
+                    await query.edit_message_text(text=edit, parse_mode=result.get("parse_mode"), reply_markup=markup)
+                except Exception:
+                    logger.debug("Plugin callback edit failed", exc_info=True)
+            return True
+        return False
+
     async def _handle_ack_alert_callback(self, query, data, cb):
         if not await self._callback_authorized(
             query, cb, "⛔ You are not authorized to acknowledge this alert.",

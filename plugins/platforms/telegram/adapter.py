@@ -4838,6 +4838,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramLocalCallbacksMixin, Tel
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
+        await self._handle_plugin_callback_query(query, data, cb)
 
     async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
