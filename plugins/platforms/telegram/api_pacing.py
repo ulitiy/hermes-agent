@@ -10,6 +10,8 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 
 
 class TelegramApiPacingMixin:
+    _bot_api_min_interval_seconds = 0.0
+
     def _configured_bot_api_min_interval(self):
         default = (getattr(self.config, "extra", {}) or {}).get("api_min_interval_seconds", 0.0)
         raw = get_scoped_secret("HERMES_TELEGRAM_API_MIN_INTERVAL_SECONDS") or default
