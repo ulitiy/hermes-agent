@@ -175,7 +175,7 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
+        Priority (highest first): session ``/model`` → ``channel_overrides`` → topic role → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
@@ -250,6 +250,14 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
             from hermes_cli.fallback_config import pre_agent_fallback_notice
             self._pre_agent_fallback_notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
+
+        profile_name = self._load_source_profile(source) if source is not None else None
+        if profile_name:
+            profile_model, profile_runtime = self._load_profile_model_runtime_config(profile_name)
+            if profile_model:
+                model = profile_model
+            if profile_runtime:
+                runtime_kwargs = profile_runtime
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:
