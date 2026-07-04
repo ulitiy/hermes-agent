@@ -907,6 +907,7 @@ class SessionStore(
 
     def get_or_create_session(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        *, reset_policy=None,
     ) -> SessionEntry:
         """Single-flight session lookup/create per routing key: overlapping calls for one key (even
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
@@ -936,6 +937,7 @@ class SessionStore(
         try:
             slot.result = self._get_or_create_session_impl(
                 source, force_new=force_new, touch_activity=touch_activity,
+                reset_policy=reset_policy,
             )
             return slot.result
         except BaseException as exc:
@@ -948,6 +950,7 @@ class SessionStore(
 
     def _get_or_create_session_impl(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        *, reset_policy=None,
     ) -> SessionEntry:
         """One routing transition for the single-flight owner. All blocking I/O (SQLite SELECTs,
         index rewrite + fsync, recovery queries) runs *outside* ``self._lock``, which protects
@@ -971,7 +974,7 @@ class SessionStore(
                 sid, self._compression_tip_for_session_id(sid),
                 self._is_session_ended_in_db(sid) and self._local_receipt_target(observed) is None
                 and not self._api_bound(observed),
-                self._route_reset_reason(observed),
+                self._route_reset_reason(observed, reset_policy if touch_activity else None),
             )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now, source)

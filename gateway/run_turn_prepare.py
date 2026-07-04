@@ -341,10 +341,15 @@ class GatewayTurnPrepareMixin:
                 )
                 return
         else:
-            # Internal wakes observe reset policy without counting as user activity, or periodic
-            # notifications keep the routing key alive across every daily/idle boundary.
+            # Only an actual user turn may opt into local time/always reset policy.
+            policy_kwargs = {}
+            if not getattr(event, "internal", False):
+                policy = await asyncio.to_thread(self._load_new_session_policy, source)
+                if policy.mode != "none":
+                    policy_kwargs["reset_policy"] = policy
             session_entry = await self.async_session_store.get_or_create_session(
                 source, touch_activity=not bool(getattr(event, "internal", False)),
+                **policy_kwargs,
             )
         session_key = session_entry.session_key
         claim = getattr(event, "_claimed_owner", None)
@@ -380,6 +385,9 @@ class GatewayTurnPrepareMixin:
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
         """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
         a fresh one. Returns the (possibly switched) session entry."""
+        if session_entry.was_auto_reset:
+            await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
+            return session_entry
         binding = None
         try:
             if self._session_db:
@@ -463,6 +471,13 @@ class GatewayTurnPrepareMixin:
         from gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
         context_note = _AUTO_RESET_CONTEXT_NOTES.get(reset_reason, _AUTO_RESET_CONTEXT_NOTES["suspended"])
+        local_policy = None
+        if reset_reason in {"always", "idle", "daily"}:
+            local_policy = await asyncio.to_thread(self._load_new_session_policy, source)
+            context_note = (
+                f"[System note: The user's explicit {reset_reason} session policy started a fresh conversation. "
+                "There is no prior context in this session.]"
+            )
         # Long-lived channels: point the agent at the prior same-channel session for session_search.
         try:
             # Returns None (appends nothing) for other platforms or when there's no prior activity to
@@ -477,9 +492,17 @@ class GatewayTurnPrepareMixin:
         try:
             from gateway.bot_peer_notices import automatic_notices_allowed
             should_notify = reset_reason == "suspended" and automatic_notices_allowed(source)
+            if local_policy is not None:
+                should_notify = (
+                    local_policy.notify and session_entry.reset_had_activity
+                    and source.platform.value not in local_policy.notify_exclude_platforms
+                    and automatic_notices_allowed(source)
+                )
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
                 notice = t("gateway.session.auto_reset_notice")
+                if local_policy is not None:
+                    notice = f"◐ New session ({reset_reason} policy). Use /resume to restore a previous session."
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:

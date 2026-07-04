@@ -162,12 +162,13 @@ def hygiene_no_commit_reason(agent) -> str:
 
 
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+from gateway.run_new_session import GatewayNewSessionMixin
 from gateway.run_background import GatewayBackgroundMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayNewSessionMixin, GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 

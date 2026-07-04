@@ -713,8 +713,18 @@ class GatewayTurnPersistenceMixin:
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
+            if response and not _intentional_silence and not getattr(event, "internal", False):
+                await self._send_post_task_new_button_now(
+                    source=source, agent_result=agent_result,
+                    reply_to_message_id=self._reply_anchor_for_event(event),
+                )
             return None
 
+        if response and not _intentional_silence and not getattr(event, "internal", False):
+            self._register_post_task_new_button(
+                source=source, session_key=session_key, run_generation=run_generation,
+                agent_result=agent_result,
+            )
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
