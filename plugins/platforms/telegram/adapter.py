@@ -396,6 +396,80 @@ def _strip_mdv2(text: str) -> str:
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
 
+# Telegram clients treat bot commands in normal prose as tappable commands, but
+# inline/fenced code spans are copy-only.  LLMs commonly suggest commands as
+# ``/restart`` or fenced `/new` snippets; unwrap command-only code so tapping the
+# visible slash command executes it instead of copying the code span.
+_TELEGRAM_FENCED_CODE_RE = re.compile(r"```(?:[^\n]*\n)?[\s\S]*?```")
+_TELEGRAM_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_TELEGRAM_TAPPABLE_SLASH_COMMAND_RE = re.compile(
+    r"^/(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
+    r"(?P<bot>@[A-Za-z0-9_]{5,32})?"
+    r"(?P<args>\s+.*)?$"
+)
+
+
+
+def _normalize_tappable_telegram_command_line(line: str) -> Optional[str]:
+    """Return a Telegram-tappable command line, or None if *line* is not one."""
+    from hermes_cli.commands_platforms import _sanitize_telegram_name
+    raw = line.strip()
+    if not raw:
+        return ""
+    match = _TELEGRAM_TAPPABLE_SLASH_COMMAND_RE.match(raw)
+    if not match:
+        return None
+    name = _sanitize_telegram_name(match.group("name"))
+    if not name:
+        return None
+    return f"/{name}{match.group('bot') or ''}{match.group('args') or ''}"
+
+
+def _unwrap_tappable_slash_command_code(text: str) -> str:
+    """Unwrap code formatting around standalone slash commands for Telegram.
+
+    Normal code must remain copy-friendly.  Only inline code whose entire
+    contents are a slash command, and fenced blocks where every nonblank line is
+    a slash command, are rewritten into plain command text.
+    """
+    if not text or "`" not in text or "/" not in text:
+        return text
+
+    def _unwrap_inline(segment: str) -> str:
+        def _replace_inline(match: re.Match[str]) -> str:
+            normalized = _normalize_tappable_telegram_command_line(match.group(1))
+            return normalized if normalized is not None else match.group(0)
+
+        return _TELEGRAM_INLINE_CODE_RE.sub(_replace_inline, segment)
+
+    def _unwrap_fenced(block: str) -> Optional[str]:
+        inner = block[3:-3]
+        body = inner.split("\n", 1)[1] if "\n" in inner else inner
+        if not body.strip():
+            return None
+        out_lines: list[str] = []
+        saw_command = False
+        for line in body.splitlines():
+            normalized = _normalize_tappable_telegram_command_line(line)
+            if normalized is None:
+                return None
+            if normalized:
+                saw_command = True
+            out_lines.append(normalized)
+        if not saw_command:
+            return None
+        return "\n".join(out_lines)
+
+    out: list[str] = []
+    pos = 0
+    for match in _TELEGRAM_FENCED_CODE_RE.finditer(text):
+        out.append(_unwrap_inline(text[pos:match.start()]))
+        unwrapped = _unwrap_fenced(match.group(0))
+        out.append(unwrapped if unwrapped is not None else match.group(0))
+        pos = match.end()
+    out.append(_unwrap_inline(text[pos:]))
+    return "".join(out)
+
 
 def _separate_chunk_indicator_from_fence(text: str) -> str:
     """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
@@ -1403,7 +1477,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
-        payload: dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        payload: dict[str, Any] = {
+            "markdown": _rich_normalize_linebreaks(
+                _unwrap_tappable_slash_command_code(content)
+            )
+        }
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -5772,7 +5850,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
 
         # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
         #    before the normal MarkdownV2 conversions run.
-        text = _wrap_markdown_tables(content)
+        text = _wrap_markdown_tables(_unwrap_tappable_slash_command_code(content))
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
