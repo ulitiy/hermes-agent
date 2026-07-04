@@ -1579,9 +1579,10 @@ class SessionStore:
         policy = self.config.get_reset_policy(
             platform=entry.platform,
             session_type=entry.chat_type,
+            profile=getattr(entry.origin, "profile", None),
         )
 
-        if policy.mode == "none":
+        if policy.mode in {"none", "always"}:
             return False
 
         now = _now()
@@ -1629,8 +1630,9 @@ class SessionStore:
             policy = self.config.get_reset_policy(
                 platform=entry.platform,
                 session_type=entry.chat_type,
+                profile=getattr(entry.origin, "profile", None),
             )
-            return policy.mode != "none"
+            return policy.mode not in {"none", "always"}
         except Exception:
             return False
 
@@ -1680,11 +1682,15 @@ class SessionStore:
 
         policy = self.config.get_reset_policy(
             platform=source.platform,
-            session_type=source.chat_type
+            session_type=source.chat_type,
+            profile=getattr(source, "profile", None),
         )
         
         if policy.mode == "none":
             return None
+
+        if policy.mode == "always":
+            return "always"
         
         now = _now()
         
