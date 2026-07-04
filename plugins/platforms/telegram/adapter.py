@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import tempfile
 import html as _html
 import re
@@ -580,6 +581,115 @@ class TelegramAdapter(BasePlatformAdapter):
         """Telegram measures message length in UTF-16 code units."""
         return utf16_len
 
+    def _configured_bot_api_min_interval(self) -> float:
+        """Return the per-chat Bot API spacing configured for outbound calls.
+
+        Telegram flood limits are mostly per chat/supergroup, and streaming
+        replies share that budget with cron/status/approval messages.  PTB's
+        global request limiter is optional and dependency-backed; keep a small
+        adapter-local limiter so installs without the ``rate-limiter`` extra can
+        still coalesce bursts before Telegram returns RetryAfter.
+        """
+        raw = (getattr(self.config, "extra", {}) or {}).get(
+            "api_min_interval_seconds", 0.0
+        )
+        try:
+            default = float(raw)
+        except (TypeError, ValueError):
+            default = 0.0
+        return self._env_float_clamped(
+            "HERMES_TELEGRAM_API_MIN_INTERVAL_SECONDS",
+            default,
+            min_value=0.0,
+            max_value=10.0,
+        )
+
+    def _telegram_api_limit_key(self, chat_id: Any) -> str:
+        try:
+            return str(normalize_telegram_chat_id(chat_id))
+        except Exception:
+            return str(chat_id)
+
+    def _telegram_api_retry_after_seconds(self, exc: Exception) -> Optional[float]:
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except (TypeError, ValueError):
+                pass
+        match = re.search(
+            r"retry\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)",
+            str(exc),
+            re.IGNORECASE,
+        )
+        if match:
+            try:
+                return max(0.0, float(match.group(1)))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _record_telegram_api_retry_after(self, key: str, exc: Exception) -> None:
+        wait = self._telegram_api_retry_after_seconds(exc)
+        if wait is None:
+            return
+        next_allowed = getattr(self, "_bot_api_next_allowed_at", None)
+        if next_allowed is None:
+            next_allowed = {}
+            self._bot_api_next_allowed_at = next_allowed
+        next_allowed[key] = max(
+            next_allowed.get(key, 0.0),
+            time.monotonic() + wait + 0.1,
+        )
+
+    async def _rate_limited_telegram_call(self, chat_id: Any, func, /, *args, **kwargs):
+        """Serialize and pace outbound Bot API calls per chat.
+
+        This covers send/edit/delete and rich/draft raw Bot API calls.  It is
+        intentionally conservative and local: calls for different chats can run
+        concurrently, while one noisy forum topic cannot spend the same
+        supergroup's edit/send budget faster than Telegram accepts.
+        """
+        interval = float(getattr(self, "_bot_api_min_interval_seconds", 0.0) or 0.0)
+        key = self._telegram_api_limit_key(chat_id)
+
+        if interval <= 0:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as exc:
+                self._record_telegram_api_retry_after(key, exc)
+                raise
+
+        locks = getattr(self, "_bot_api_locks", None)
+        if locks is None:
+            locks = {}
+            self._bot_api_locks = locks
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+
+        next_allowed = getattr(self, "_bot_api_next_allowed_at", None)
+        if next_allowed is None:
+            next_allowed = {}
+            self._bot_api_next_allowed_at = next_allowed
+
+        async with lock:
+            now = time.monotonic()
+            delay = next_allowed.get(key, 0.0) - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                result = await func(*args, **kwargs)
+            except Exception as exc:
+                self._record_telegram_api_retry_after(key, exc)
+                raise
+            next_allowed[key] = max(
+                next_allowed.get(key, 0.0),
+                time.monotonic() + interval,
+            )
+            return result
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -678,6 +788,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
+        self._bot_api_min_interval_seconds = self._configured_bot_api_min_interval()
+        self._bot_api_locks: Dict[str, asyncio.Lock] = {}
+        self._bot_api_next_allowed_at: Dict[str, float] = {}
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -1719,8 +1832,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # return_type=Message would make PTB deserialize a Bot API 10.1
             # response shape it does not fully model yet; a post-delivery parse
             # error must not be mistaken for a sendable failure.
-            msg = await self._bot.do_api_request(
-                "sendRichMessage", api_kwargs=payload
+            msg = await self._rate_limited_telegram_call(
+                chat_id,
+                self._bot.do_api_request,
+                "sendRichMessage",
+                api_kwargs=payload,
             )
         except Exception as exc:
             if self._is_rich_fallback_error(exc):
@@ -1824,8 +1940,36 @@ class TelegramAdapter(BasePlatformAdapter):
             # Raw Bot API result; do not request return_type=Message (PTB does
             # not fully model the 10.1 response shape yet — a post-edit parse
             # error must not be mistaken for a failed edit).
-            await self._bot.do_api_request("editMessageText", api_kwargs=payload)
+            await self._rate_limited_telegram_call(
+                chat_id,
+                self._bot.do_api_request,
+                "editMessageText",
+                api_kwargs=payload,
+            )
         except Exception as exc:
+            retry_after = self._telegram_api_retry_after_seconds(exc)
+            if retry_after is not None and retry_after <= 30.0:
+                logger.info(
+                    "[%s] rich editMessageText flood-limited; waiting %.1fs before retry",
+                    self.name,
+                    retry_after,
+                )
+                await asyncio.sleep(retry_after)
+                try:
+                    await self._rate_limited_telegram_call(
+                        chat_id,
+                        self._bot.do_api_request,
+                        "editMessageText",
+                        api_kwargs=payload,
+                    )
+                    try:
+                        from gateway import rich_sent_store
+                        rich_sent_store.record(str(chat_id), str(message_id), content)
+                    except Exception:
+                        pass
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_exc:
+                    exc = retry_exc
             if self._is_rich_fallback_error(exc):
                 if self._is_rich_capability_error(exc):
                     self._rich_send_disabled = True
@@ -1907,7 +2051,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if thread_id is not None:
             payload["message_thread_id"] = int(thread_id)
         try:
-            ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
+            ok = await self._rate_limited_telegram_call(
+                chat_id,
+                self._bot.do_api_request,
+                "sendRichMessageDraft",
+                api_kwargs=payload,
+            )
             return bool(ok)
         except Exception as exc:
             if self._is_rich_capability_error(exc):
@@ -3143,7 +3292,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Send a seed message so the topic is visible in Telegram's client.
                     # Empty topics are hidden by the client UI until they contain a message.
                     try:
-                        await self._bot.send_message(
+                        await self._rate_limited_telegram_call(
+                            chat_id,
+                            self._bot.send_message,
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_thread_id=thread_id,
                             text=f"\U0001f4cc {topic_name}",
@@ -4134,7 +4285,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
-                            msg = await self._bot.send_message(
+                            msg = await self._rate_limited_telegram_call(
+                                chat_id,
+                                self._bot.send_message,
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4148,7 +4301,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
+                                msg = await self._rate_limited_telegram_call(
+                                    chat_id,
+                                    self._bot.send_message,
                                     chat_id=normalize_telegram_chat_id(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
@@ -4444,7 +4599,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
+                await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.edit_message_text,
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=content,
@@ -4455,7 +4612,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
             formatted = self.format_message(content)
             try:
-                await self._bot.edit_message_text(
+                await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.edit_message_text,
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=formatted,
@@ -4473,7 +4632,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     safe_format_error,
                 )
                 _plain = _strip_mdv2(content) if content else content
-                await self._bot.edit_message_text(
+                await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.edit_message_text,
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=_plain,
@@ -4501,32 +4662,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     # Saturated-preview dedup (see pre-flight path above).
                     return SendResult(success=True, message_id=message_id)
-                await self._bot.edit_message_text(
+                await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.edit_message_text,
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
-            # Flood control / RetryAfter — short waits are retried inline,
-            # long waits return a failure immediately so streaming can fall back
-            # to a normal final send instead of leaving a truncated partial.
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
-                logger.warning(
-                    "[%s] Telegram flood control, waiting %.1fs",
+            # Flood control / RetryAfter — let the per-chat limiter absorb the
+            # cooldown.  Finalize waits inline (within a sane cap) so the
+            # stream consumer does not fall back to a duplicate fresh send just
+            # because Telegram asked us to retry the in-place edit later.
+            wait = self._telegram_api_retry_after_seconds(e)
+            if wait is not None:
+                logger.info(
+                    "[%s] Telegram edit flood-limited; waiting %.1fs",
                     self.name, wait,
                 )
-                if wait > 5.0:
+                max_inline_wait = 30.0 if finalize else 5.0
+                if wait > max_inline_wait:
                     return SendResult(
                         success=False,
                         error=f"flood_control:{wait}",
+                        retryable=not finalize,
                         retry_after=float(wait),
                     )
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
+                    await self._rate_limited_telegram_call(
+                        chat_id,
+                        self._bot.edit_message_text,
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
                         text=content,
@@ -4632,7 +4799,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.format_message(first_chunk)
                 )
                 try:
-                    await self._bot.edit_message_text(
+                    await self._rate_limited_telegram_call(
+                        chat_id,
+                        self._bot.edit_message_text,
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
                         text=formatted,
@@ -4645,13 +4814,17 @@ class TelegramAdapter(BasePlatformAdapter):
                             "failed, falling back to plain text: %s",
                             self.name, fmt_err,
                         )
-                        await self._bot.edit_message_text(
+                        await self._rate_limited_telegram_call(
+                            chat_id,
+                            self._bot.edit_message_text,
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
                             text=_strip_mdv2(first_chunk),
                         )
             else:
-                await self._bot.edit_message_text(
+                await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.edit_message_text,
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=first_chunk,
@@ -4700,7 +4873,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         # the raw chunk (raw ** / ``` markers would render
                         # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
-                    sent_msg = await self._bot.send_message(
+                    sent_msg = await self._rate_limited_telegram_call(
+                        chat_id,
+                        self._bot.send_message,
                         chat_id=normalize_telegram_chat_id(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
@@ -4723,7 +4898,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             )
                         )
                         try:
-                            sent_msg = await self._bot.send_message(
+                            sent_msg = await self._rate_limited_telegram_call(
+                                chat_id,
+                                self._bot.send_message,
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=_strip_mdv2(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
@@ -4806,7 +4983,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return False
         try:
-            await self._bot.delete_message(
+            await self._rate_limited_telegram_call(
+                chat_id,
+                self._bot.delete_message,
                 chat_id=normalize_telegram_chat_id(chat_id),
                 message_id=int(message_id),
             )
@@ -4899,7 +5078,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 kwargs["message_thread_id"] = thread_id
 
             try:
-                ok = await self._bot.send_message_draft(**kwargs)
+                ok = await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.send_message_draft,
+                    **kwargs,
+                )
                 if ok:
                     # Drafts have no message_id; we report success without one
                     # so the caller knows the animation frame landed.
@@ -4939,9 +5122,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             raise RuntimeError("Not connected")
 
+        chat_id = kwargs.get("chat_id")
         message_thread_id = kwargs.get("message_thread_id")
         try:
-            return await self._bot.send_message(**kwargs)
+            return await self._rate_limited_telegram_call(
+                chat_id,
+                self._bot.send_message,
+                **kwargs,
+            )
         except Exception as send_err:
             if (
                 message_thread_id is not None
@@ -4962,7 +5150,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
-                return await self._bot.send_message(**retry_kwargs)
+                return await self._rate_limited_telegram_call(
+                    chat_id,
+                    self._bot.send_message,
+                    **retry_kwargs,
+                )
             raise
 
     async def send_update_prompt(
