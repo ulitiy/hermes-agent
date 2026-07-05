@@ -17,6 +17,7 @@ Covers three layers of the fix:
 """
 
 import asyncio
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -208,6 +209,178 @@ class TestStaleSessionLockSelfHeal:
         assert any("handled:text" in r for r in adapter.sent_responses), (
             "stale lock trapped a normal message — split-brain not healed"
         )
+
+
+    def test_fresh_no_owner_task_is_not_treated_as_stale(self):
+        """A freshly ownerless guard gets a grace window before self-heal."""
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        adapter._active_sessions[sk] = asyncio.Event()
+        # No _session_tasks entry.
+
+        assert adapter._session_task_is_stale(sk) is False
+        assert adapter._heal_stale_session_lock(sk) is False
+
+    def test_old_no_owner_task_is_treated_as_stale(self):
+        """An ownerless guard past the grace window is an orphaned lock."""
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._session_guard_started_at[sk] = time.monotonic() - 10
+        adapter._ownerless_session_guard_grace_seconds = 0.01
+
+        assert adapter._session_task_is_stale(sk) is True
+        assert adapter._heal_stale_session_lock(sk) is True
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_live_pre_handler_task_is_healed_on_next_message(self):
+        """A live owner task that never reaches the gateway handler must not block forever."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._pre_handler_guard_grace_seconds = 0.01
+
+        start_hook_entered = asyncio.Event()
+        release_start_hook = asyncio.Event()
+        second_processed = asyncio.Event()
+        handler_calls = []
+
+        async def _wedged_start_hook(event):
+            start_hook_entered.set()
+            await release_start_hook.wait()
+
+        async def _normal_start_hook(event):
+            return None
+
+        async def _handler(event):
+            handler_calls.append(event.text)
+            if event.text == "second":
+                second_processed.set()
+            return f"handled:{event.text}"
+
+        adapter.on_processing_start = _wedged_start_hook
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("first"))
+        await asyncio.wait_for(start_hook_entered.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+
+        # The next inbound event should classify the owner task as pre-handler
+        # wedged, cancel it, clear the guard, and dispatch the fresh message.
+        adapter.on_processing_start = _normal_start_hook
+        await adapter.handle_message(_make_event("second"))
+        await asyncio.wait_for(second_processed.wait(), timeout=1.0)
+
+        while adapter._background_tasks:
+            await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks), return_exceptions=True), timeout=5)
+
+        assert handler_calls == ["second"]
+        assert sk not in adapter._pending_messages
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_live_task_after_handler_entry_is_not_pre_handler_stale(self):
+        """Long-running handler turns are owned by runner/agent timeouts, not adapter heal."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._pre_handler_guard_grace_seconds = 0.01
+
+        handler_entered = asyncio.Event()
+        release_handler = asyncio.Event()
+        handler_calls = []
+
+        async def _handler(event):
+            handler_calls.append(event.text)
+            if event.text == "first":
+                handler_entered.set()
+                await release_handler.wait()
+            return f"handled:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("first"))
+        await asyncio.wait_for(handler_entered.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+
+        await adapter.handle_message(_make_event("second"))
+        await asyncio.sleep(0)
+
+        assert handler_calls == ["first"]
+        assert sk in adapter._active_sessions
+        assert sk in adapter._pending_messages
+
+        release_handler.set()
+        while adapter._background_tasks:
+            await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks), return_exceptions=True), timeout=5)
+
+        assert handler_calls == ["first", "second"]
+
+    def test_live_owner_task_is_not_stale(self):
+        """When the owner task is alive, do NOT heal — agent is really busy."""
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._session_tasks[sk] = fake_task
+
+        assert adapter._session_task_is_stale(sk) is False
+        assert adapter._heal_stale_session_lock(sk) is False
+        # Lock still in place.
+        assert sk in adapter._active_sessions
+        assert sk in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_guard_mismatch_preserves_session_task_for_stale_detection(self):
+        """When guard mismatch skips _release_session_guard, _session_tasks is preserved.
+
+        This is the core of the production split-brain fix: the finally block
+        only deletes _session_tasks[key] if _active_sessions[key] was actually
+        released. If the guard was swapped (e.g., by a reset command), the
+        _session_tasks entry remains so _session_task_is_stale can detect the
+        done task and heal the lock on the next inbound message.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        # Simulate: task recorded with guard=event_a
+        event_a = asyncio.Event()
+        async def _done():
+            return None
+
+        done_task = asyncio.create_task(_done())
+        await done_task
+
+        adapter._active_sessions[sk] = event_a
+        adapter._session_tasks[sk] = done_task
+
+        # Simulate guard swap (as reset/new command would do)
+        event_b = asyncio.Event()
+        adapter._active_sessions[sk] = event_b
+
+        # Drive the REAL finally-block cleanup helper (not a copy of its logic):
+        # _release_session_guard sees event_b != event_a → skips releasing, so
+        # _session_tasks must be preserved for stale detection.
+        adapter._cleanup_finished_session_task(sk, event_a)
+
+        # _session_tasks preserved because guard mismatch kept _active_sessions
+        assert sk in adapter._session_tasks, (
+            "_session_tasks entry must survive guard mismatch so stale detection works"
+        )
+        assert adapter._session_tasks[sk] is done_task
+
+        # Stale detection now works: task is done, guard is stale
+        assert adapter._session_task_is_stale(sk) is True
+
+        # Heal clears both
+        assert adapter._heal_stale_session_lock(sk) is True
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
 
 
     @pytest.mark.asyncio

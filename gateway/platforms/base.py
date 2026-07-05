@@ -431,6 +431,7 @@ from gateway.platforms.base_exec_approval import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
+from gateway.platforms.session_progress import SessionProgressMixin
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -1914,7 +1915,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(SessionProgressMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -1994,6 +1995,7 @@ class BasePlatformAdapter(ABC):
         self._pending_text_batches: dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: dict[str, asyncio.Task] = {}
         self._session_tasks: dict[str, asyncio.Task] = {}
+        self._ensure_session_progress_tracking()
         # Busy-text policy is a per-profile config decision the runner installs after construction
         # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
         # profile's values into every profile's adapter under multiplexing (#116893). Defaults here
@@ -3928,21 +3930,26 @@ class BasePlatformAdapter(ABC):
         if current_guard is None or (guard is not None and current_guard is not guard):
             return
         del self._active_sessions[session_key]
+        self._ensure_session_progress_tracking()
+        self._session_guard_started_at.pop(session_key, None)
+        self._session_handler_entered_at.pop(session_key, None)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
-        """True if the recorded owner task for ``session_key`` has exited. No owner task at all is
-        NOT stale (guards installed outside handle_message, as tests do, must not be healed)."""
-        done = getattr(self._session_tasks.get(session_key), "done", None)
-        return bool(done and done())
+        """True only for an orphan or a task stalled before durable gateway progress."""
+        return self._session_lock_stale_reason(session_key) is not None
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
         """Clear a stale session lock; True if healed. On-entry safety net: without it a split-brain
         (guard held, nothing processing) traps the chat in "Interrupting..." until restart."""
         if session_key not in self._active_sessions or not self._session_task_is_stale(session_key):
             return False
+        task = self._session_tasks.get(session_key)
+        if task is not None and not task.done():
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
                        self.name, session_key)
-        self._active_sessions.pop(session_key, None)
+        self._release_session_guard(session_key)
         self._pending_messages.pop(session_key, None)
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
@@ -3956,6 +3963,7 @@ class BasePlatformAdapter(ABC):
         (False)."""
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        self._record_session_guard(session_key)
         task = asyncio.create_task(self._process_message_background(event, session_key))
         if not self._track_session_task(session_key, task):
             self._session_tasks.pop(session_key, None)
@@ -3975,6 +3983,7 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+            task.add_done_callback(lambda done, key=session_key: self._log_processing_task_exception(key, done))
         return True
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
@@ -4023,6 +4032,8 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
+        self._record_session_guard(session_key)
+        self.mark_session_gateway_handler_entered(session_key)
         try:
             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
             # confirmation.
@@ -4584,6 +4595,7 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
+            self.mark_session_gateway_handler_entered(session_key)
             response = await self._message_handler(event)
             callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
@@ -4737,6 +4749,7 @@ class BasePlatformAdapter(ABC):
         sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
         newer message."""
         self._clear_session_guard(session_key)
+        self._record_session_guard(session_key)
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
@@ -4810,6 +4823,9 @@ class BasePlatformAdapter(ABC):
                        self._pending_messages, self._active_sessions, self._requeue_counts,
                        self._text_debounce_store()):
             bucket.clear()
+        self._ensure_session_progress_tracking()
+        self._session_guard_started_at.clear()
+        self._session_handler_entered_at.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
