@@ -17,6 +17,7 @@ Covers three layers of the fix:
 """
 
 import asyncio
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -268,12 +269,8 @@ class TestStaleSessionLockSelfHeal:
             "stale lock trapped a normal message — split-brain not healed"
         )
 
-    def test_no_owner_task_is_not_treated_as_stale(self):
-        """If _session_tasks has no entry at all, the guard isn't stale.
-
-        Tests and rare legitimate code paths install _active_sessions
-        entries directly.  Auto-healing those would break real fixtures.
-        """
+    def test_fresh_no_owner_task_is_not_treated_as_stale(self):
+        """A freshly ownerless guard gets a grace window before self-heal."""
         adapter = _make_adapter()
         sk = _session_key()
 
@@ -282,6 +279,103 @@ class TestStaleSessionLockSelfHeal:
 
         assert adapter._session_task_is_stale(sk) is False
         assert adapter._heal_stale_session_lock(sk) is False
+
+    def test_old_no_owner_task_is_treated_as_stale(self):
+        """An ownerless guard past the grace window is an orphaned lock."""
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        adapter._active_sessions[sk] = asyncio.Event()
+        adapter._session_guard_started_at[sk] = time.monotonic() - 10
+        adapter._ownerless_session_guard_grace_seconds = 0.01
+
+        assert adapter._session_task_is_stale(sk) is True
+        assert adapter._heal_stale_session_lock(sk) is True
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_live_pre_handler_task_is_healed_on_next_message(self):
+        """A live owner task that never reaches the gateway handler must not block forever."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._pre_handler_guard_grace_seconds = 0.01
+
+        start_hook_entered = asyncio.Event()
+        release_start_hook = asyncio.Event()
+        second_processed = asyncio.Event()
+        handler_calls = []
+
+        async def _wedged_start_hook(event):
+            start_hook_entered.set()
+            await release_start_hook.wait()
+
+        async def _normal_start_hook(event):
+            return None
+
+        async def _handler(event):
+            handler_calls.append(event.text)
+            if event.text == "second":
+                second_processed.set()
+            return f"handled:{event.text}"
+
+        adapter.on_processing_start = _wedged_start_hook
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("first"))
+        await asyncio.wait_for(start_hook_entered.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+
+        # The next inbound event should classify the owner task as pre-handler
+        # wedged, cancel it, clear the guard, and dispatch the fresh message.
+        adapter.on_processing_start = _normal_start_hook
+        await adapter.handle_message(_make_event("second"))
+        await asyncio.wait_for(second_processed.wait(), timeout=1.0)
+
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert handler_calls == ["second"]
+        assert sk not in adapter._pending_messages
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_live_task_after_handler_entry_is_not_pre_handler_stale(self):
+        """Long-running handler turns are owned by runner/agent timeouts, not adapter heal."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._pre_handler_guard_grace_seconds = 0.01
+
+        handler_entered = asyncio.Event()
+        release_handler = asyncio.Event()
+        handler_calls = []
+
+        async def _handler(event):
+            handler_calls.append(event.text)
+            if event.text == "first":
+                handler_entered.set()
+                await release_handler.wait()
+            return f"handled:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("first"))
+        await asyncio.wait_for(handler_entered.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+
+        await adapter.handle_message(_make_event("second"))
+        await asyncio.sleep(0)
+
+        assert handler_calls == ["first"]
+        assert sk in adapter._active_sessions
+        assert sk in adapter._pending_messages
+
+        release_handler.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert handler_calls == ["first", "second"]
 
     def test_live_owner_task_is_not_stale(self):
         """When the owner task is alive, do NOT heal — agent is really busy."""
