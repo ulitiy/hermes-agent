@@ -184,6 +184,7 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.reaction_capture import TelegramReactionCaptureMixin
 from plugins.platforms.telegram.local_callbacks import TelegramLocalCallbacksMixin
 from plugins.platforms.telegram.new_session import TelegramNewSessionMixin
+from plugins.platforms.telegram.mention_links import text_link_targets_bot
 from plugins.platforms.telegram.api_pacing import TelegramApiPacingMixin
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -6277,11 +6278,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
-                    if user and getattr(user, "id", None) == bot_id:
+                    if bot_id is not None and str(getattr(user, "id", "")) == str(bot_id):
                         return True
                 elif entity_type == "text_link":
-                    match = re.fullmatch(r"tg://user\?id=(\d+)(?:[&#].*)?", str(getattr(entity, "url", "") or ""))
-                    if match and match.group(1) == str(bot_id):
+                    if text_link_targets_bot(str(getattr(entity, "url", "") or ""), bot_id, bot_username):
                         return True
                 elif entity_type == "bot_command" and expected:
                     # ``/cmd@botname`` (what the group command menu produces) must count as a direct address.
