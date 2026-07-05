@@ -1876,6 +1876,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
             self, "pre-drain mark_resume_pending"
         )
+        # Human-response waits cannot finish while the gateway is going away.
+        # Clear only our running sessions; unrelated prompts must remain live.
+        from tools.clarify_gateway import clear_session
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        cancelled = sum(
+            clear_session(key) for key, agent in list(self._running_agents.items())
+            if agent is not _AGENT_PENDING_SENTINEL
+        )
+        if cancelled:
+            logger.info("Shutdown: cancelled %d pending clarify request(s)", cancelled)
         _cron_at_start = self._active_cron_job_count()
         _api_at_start = self._active_api_run_count()
         _deferred_at_start = ctx.deferred_count()
