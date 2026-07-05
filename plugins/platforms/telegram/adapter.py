@@ -6279,6 +6279,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
                     user = getattr(entity, "user", None)
                     if user and getattr(user, "id", None) == bot_id:
                         return True
+                elif entity_type == "text_link":
+                    match = re.fullmatch(r"tg://user\?id=(\d+)(?:[&#].*)?", str(getattr(entity, "url", "") or ""))
+                    if match and match.group(1) == str(bot_id):
+                        return True
                 elif entity_type == "bot_command" and expected:
                     # ``/cmd@botname`` (what the group command menu produces) must count as a direct address.
                     command_text = self._entity_span(source_text, entity)
