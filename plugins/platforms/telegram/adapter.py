@@ -8023,10 +8023,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
 
-        # Cancel any pending flush and restart the timer
+        # Cancel only a still-buffering flush timer. Once the prior task has
+        # consumed its pending event, it may already be inside handle_message();
+        # a follow-up Telegram update must not cancel that in-flight user turn.
+        should_cancel_prior = existing is not None
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
-            prior_task.cancel()
+            if should_cancel_prior:
+                prior_task.cancel()
+            else:
+                background_tasks = getattr(self, "_background_tasks", None)
+                if background_tasks is not None:
+                    background_tasks.add(prior_task)
+                    prior_task.add_done_callback(background_tasks.discard)
         self._pending_text_batch_tasks[key] = asyncio.create_task(
             self._flush_text_batch(key)
         )

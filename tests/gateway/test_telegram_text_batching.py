@@ -34,6 +34,7 @@ def _make_adapter():
     adapter._pending_text_batch_tasks = {}
     adapter._pending_photo_batches = {}
     adapter._pending_photo_batch_tasks = {}
+    adapter._background_tasks = set()
     adapter._media_group_events = {}
     adapter._media_group_tasks = {}
     adapter._polling_error_task = None
@@ -137,6 +138,91 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_follow_up_after_flush_starts_does_not_cancel_started_dispatch(self):
+        """A new text chunk after dispatch starts must not cancel the started turn."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.01
+        first_started = asyncio.Event()
+        first_completed = asyncio.Event()
+        first_cancelled = asyncio.Event()
+        second_completed = asyncio.Event()
+        release_first = asyncio.Event()
+        seen_texts: list[str] = []
+
+        async def handle_message(event):
+            seen_texts.append(event.text)
+            if event.text == "first":
+                first_started.set()
+                try:
+                    await release_first.wait()
+                    first_completed.set()
+                except asyncio.CancelledError:
+                    first_cancelled.set()
+                    raise
+            elif event.text == "second":
+                second_completed.set()
+
+        key = adapter._text_batch_key(_make_event("first"))
+        adapter.handle_message = handle_message
+        adapter._enqueue_text_event(_make_event("first"))
+        first_task = adapter._pending_text_batch_tasks[key]
+
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        adapter._enqueue_text_event(_make_event("second"))
+        replacement_task = adapter._pending_text_batch_tasks[key]
+
+        assert replacement_task is not first_task
+        assert first_task in adapter._background_tasks
+        assert not first_cancelled.is_set()
+
+        release_first.set()
+        await asyncio.wait_for(first_completed.wait(), timeout=1)
+        await asyncio.wait_for(second_completed.wait(), timeout=1)
+        await asyncio.sleep(0)
+
+        assert seen_texts == ["first", "second"]
+        assert not first_cancelled.is_set()
+        assert adapter._background_tasks == set()
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_started_dispatch_cleanup_does_not_delete_replacement_timer(self):
+        """The old dispatch task finishing must not erase a newer batch timer."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        first_started = asyncio.Event()
+        second_completed = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def handle_message(event):
+            if event.text == "first":
+                first_started.set()
+                await release_first.wait()
+            elif event.text == "second":
+                second_completed.set()
+
+        key = adapter._text_batch_key(_make_event("first"))
+        adapter.handle_message = handle_message
+        adapter._enqueue_text_event(_make_event("first"))
+        first_task = adapter._pending_text_batch_tasks[key]
+
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        adapter._enqueue_text_event(_make_event("second"))
+        replacement_task = adapter._pending_text_batch_tasks[key]
+
+        release_first.set()
+        await asyncio.wait_for(first_task, timeout=1)
+        await asyncio.sleep(0)
+
+        assert adapter._pending_text_batch_tasks.get(key) is replacement_task
+        assert adapter._pending_text_batches[key].text == "second"
+
+        await asyncio.wait_for(second_completed.wait(), timeout=1)
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_text_batch_tasks == {}
 
     @pytest.mark.asyncio
     async def test_dm_topic_batching_recovers_thread_before_keying(self):
