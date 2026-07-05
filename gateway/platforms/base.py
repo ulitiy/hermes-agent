@@ -2369,6 +2369,20 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Guard/progress timestamps for adapter-level self-heal.  A guard with
+        # no owner task, or with a live owner task that never reaches the gateway
+        # message handler, is not a healthy active turn; it is a pre-dispatch
+        # lock that will trap future updates behind _pending_messages forever.
+        # Keep long-running LLM/tool turns out of this path by marking
+        # _session_handler_entered_at immediately before _message_handler().
+        self._session_guard_started_at: Dict[str, float] = {}
+        self._session_handler_entered_at: Dict[str, float] = {}
+        self._ownerless_session_guard_grace_seconds: float = _float_env(
+            "HERMES_GATEWAY_OWNERLESS_SESSION_GUARD_GRACE_SECONDS", 5.0
+        )
+        self._pre_handler_guard_grace_seconds: float = _float_env(
+            "HERMES_GATEWAY_PRE_HANDLER_GUARD_GRACE_SECONDS", 10.0
+        )
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -4379,6 +4393,23 @@ class BasePlatformAdapter(ABC):
     # normal completion path, (b) /stop/ /new/ /reset bypass commands,
     # and (c) stale-lock self-heal on the next inbound message.
 
+    def _ensure_session_progress_tracking(self) -> None:
+        """Lazily initialize adapter guard-progress maps.
+
+        Most adapters run ``BasePlatformAdapter.__init__()``, but several unit
+        tests intentionally construct lightweight adapters via ``object.__new__``
+        to exercise just the active-session logic.  Keep those focused tests
+        working by creating the bookkeeping fields on first use.
+        """
+        if not hasattr(self, "_session_guard_started_at"):
+            self._session_guard_started_at = {}
+        if not hasattr(self, "_session_handler_entered_at"):
+            self._session_handler_entered_at = {}
+        if not hasattr(self, "_ownerless_session_guard_grace_seconds"):
+            self._ownerless_session_guard_grace_seconds = 5.0
+        if not hasattr(self, "_pre_handler_guard_grace_seconds"):
+            self._pre_handler_guard_grace_seconds = 10.0
+
     def _release_session_guard(
         self,
         session_key: str,
@@ -4392,29 +4423,65 @@ class BasePlatformAdapter(ABC):
         guard while the old processing task unwinds, without having the old
         task's cleanup accidentally clear the replacement guard.
         """
+        self._ensure_session_progress_tracking()
         current_guard = self._active_sessions.get(session_key)
         if current_guard is None:
+            self._session_guard_started_at.pop(session_key, None)
+            self._session_handler_entered_at.pop(session_key, None)
             return
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._session_guard_started_at.pop(session_key, None)
+        self._session_handler_entered_at.pop(session_key, None)
 
-    def _session_task_is_stale(self, session_key: str) -> bool:
-        """Return True if the owner task for ``session_key`` is done/cancelled.
+    def _session_guard_age(self, session_key: str) -> float:
+        """Return guard age in seconds, first-seeing ownerless guards safely."""
+        self._ensure_session_progress_tracking()
+        now = time.monotonic()
+        started_at = self._session_guard_started_at.get(session_key)
+        if started_at is None:
+            self._session_guard_started_at[session_key] = now
+            return 0.0
+        return max(0.0, now - started_at)
 
-        A lock is "stale" when the adapter still has ``_active_sessions[key]``
-        AND a known owner task in ``_session_tasks`` that has already exited.
-        When there is no owner task at all, that usually means the guard was
-        installed by some path other than handle_message() (tests sometimes
-        install guards directly) — don't treat that as stale.  The on-entry
-        self-heal only needs to handle the production split-brain case where
-        an owner task was recorded, then exited without clearing its guard.
-        """
+    def _session_lock_stale_reason(self, session_key: str) -> Optional[str]:
+        """Classify stale adapter guards without touching healthy agent turns."""
+        self._ensure_session_progress_tracking()
+        if session_key not in self._active_sessions:
+            self._session_guard_started_at.pop(session_key, None)
+            self._session_handler_entered_at.pop(session_key, None)
+            return None
+
         task = self._session_tasks.get(session_key)
         if task is None:
-            return False
+            grace = max(
+                0.0,
+                float(getattr(self, "_ownerless_session_guard_grace_seconds", 5.0)),
+            )
+            if self._session_guard_age(session_key) >= grace:
+                return "ownerless_guard"
+            return None
+
         done = getattr(task, "done", None)
-        return bool(done and done())
+        if done and done():
+            return "owner_task_done"
+
+        # A live task is healthy only after it reaches the gateway handler.
+        # Before that boundary, a wedged lifecycle hook / setup await traps the
+        # session at adapter level while gateway_state.active_agents remains 0.
+        if session_key not in self._session_handler_entered_at:
+            grace = max(
+                0.0,
+                float(getattr(self, "_pre_handler_guard_grace_seconds", 10.0)),
+            )
+            if self._session_guard_age(session_key) >= grace:
+                return "pre_handler_task_stalled"
+        return None
+
+    def _session_task_is_stale(self, session_key: str) -> bool:
+        """Return True if the adapter-level guard for ``session_key`` is stale."""
+        return self._session_lock_stale_reason(session_key) is not None
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
         """Clear a stale session lock if the owner task is already gone.
@@ -4428,18 +4495,27 @@ class BasePlatformAdapter(ABC):
         infinite "Interrupting current task..." until the gateway is
         restarted.
         """
+        self._ensure_session_progress_tracking()
         if session_key not in self._active_sessions:
             return False
-        if not self._session_task_is_stale(session_key):
+        stale_reason = self._session_lock_stale_reason(session_key)
+        if stale_reason is None:
             return False
+        task = self._session_tasks.get(session_key)
+        if task is not None and not task.done():
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
         logger.warning(
-            "[%s] Healing stale session lock for %s (owner task is done/absent)",
+            "[%s] Healing stale session lock for %s (%s)",
             self.name,
             session_key,
+            stale_reason,
         )
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._session_guard_started_at.pop(session_key, None)
+        self._session_handler_entered_at.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
 
@@ -4457,8 +4533,11 @@ class BasePlatformAdapter(ABC):
         False is returned so the caller isn't left holding a half-installed
         session lock.
         """
+        self._ensure_session_progress_tracking()
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        self._session_guard_started_at[session_key] = time.monotonic()
+        self._session_handler_entered_at.pop(session_key, None)
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -4473,7 +4552,41 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+            task.add_done_callback(
+                lambda done_task, key=session_key: self._log_processing_task_exception(
+                    key, done_task
+                )
+            )
         return True
+
+    def _log_processing_task_exception(
+        self,
+        session_key: str,
+        task: asyncio.Task,
+    ) -> None:
+        """Log unexpected background-task failures even if no awaiter observes them."""
+        if task in getattr(self, "_expected_cancelled_tasks", set()):
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug(
+                "[%s] Failed to inspect processing task for %s",
+                self.name,
+                session_key,
+                exc_info=True,
+            )
+            return
+        if exc is not None:
+            logger.error(
+                "[%s] Background processing task for %s failed before normal cleanup: %s",
+                self.name,
+                session_key,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     async def cancel_session_processing(
         self,
@@ -4569,9 +4682,11 @@ class BasePlatformAdapter(ABC):
             session_key,
         )
 
+        self._ensure_session_progress_tracking()
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
+        self._session_guard_started_at[session_key] = time.monotonic()
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
@@ -4856,6 +4971,8 @@ class BasePlatformAdapter(ABC):
         # while binding a newer run generation to it.
         _callback_generation = None
 
+        self._ensure_session_progress_tracking()
+
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is None:
@@ -4869,6 +4986,8 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        self._session_guard_started_at.setdefault(session_key, time.monotonic())
+        self._session_handler_entered_at.pop(session_key, None)
         
         # Start continuous typing indicator (refreshes every 2 seconds).
         # Gated per-platform: when typing_indicator=False the refresh loop is
@@ -4900,7 +5019,12 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
 
-            # Call the handler (this can take a while with tool calls)
+            # Call the handler (this can take a while with tool calls).  This
+            # timestamp is the adapter→gateway boundary used by stale-lock
+            # self-heal: once set, long-running work is a real agent turn and
+            # must be handled by runner/agent timeouts, not adapter pre-handler
+            # recovery.
+            self._session_handler_entered_at[session_key] = time.monotonic()
             response = await self._message_handler(event)
             # The handler is responsible for registering callbacks and binding
             # the run generation to this event. Snapshot it now, before the
@@ -5253,6 +5377,8 @@ class BasePlatformAdapter(ABC):
                 # exhaust at ~2000 frames and SIGSEGV the process.
                 # Mirror the late-arrival drain pattern below: hand off
                 # to a new task and return so this frame can unwind.
+                self._session_guard_started_at[session_key] = time.monotonic()
+                self._session_handler_entered_at.pop(session_key, None)
                 drain_task = asyncio.create_task(
                     self._process_message_background(pending_event, session_key)
                 )
@@ -5262,6 +5388,12 @@ class BasePlatformAdapter(ABC):
                 try:
                     self._background_tasks.add(drain_task)
                     drain_task.add_done_callback(self._background_tasks.discard)
+                    drain_task.add_done_callback(self._expected_cancelled_tasks.discard)
+                    drain_task.add_done_callback(
+                        lambda done_task, key=session_key: self._log_processing_task_exception(
+                            key, done_task
+                        )
+                    )
                 except TypeError:
                     # Tests stub create_task() with non-hashable sentinels; tolerate.
                     pass
@@ -5374,6 +5506,8 @@ class BasePlatformAdapter(ABC):
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
+                    self._session_guard_started_at[session_key] = time.monotonic()
+                    self._session_handler_entered_at.pop(session_key, None)
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
@@ -5383,6 +5517,12 @@ class BasePlatformAdapter(ABC):
                     try:
                         self._background_tasks.add(drain_task)
                         drain_task.add_done_callback(self._background_tasks.discard)
+                        drain_task.add_done_callback(self._expected_cancelled_tasks.discard)
+                        drain_task.add_done_callback(
+                            lambda done_task, key=session_key: self._log_processing_task_exception(
+                                key, done_task
+                            )
+                        )
                     except TypeError:
                         # Tests stub create_task() with non-hashable sentinels; tolerate.
                         pass
@@ -5480,6 +5620,9 @@ class BasePlatformAdapter(ABC):
         self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
+        self._ensure_session_progress_tracking()
+        self._session_guard_started_at.clear()
+        self._session_handler_entered_at.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():
                 state.task.cancel()
