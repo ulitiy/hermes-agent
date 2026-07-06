@@ -341,8 +341,48 @@ class TestStaleSessionLockSelfHeal:
         assert sk not in adapter._session_tasks
 
     @pytest.mark.asyncio
-    async def test_live_task_after_handler_entry_is_not_pre_handler_stale(self):
-        """Long-running handler turns are owned by runner/agent timeouts, not adapter heal."""
+    async def test_called_handler_without_gateway_progress_is_healed_on_next_message(self):
+        """Calling the adapter handler is not enough; GatewayRunner must mark real progress."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._pre_handler_guard_grace_seconds = 0.01
+
+        first_handler_called = asyncio.Event()
+        second_processed = asyncio.Event()
+        handler_calls = []
+
+        async def _handler(event):
+            handler_calls.append(event.text)
+            if event.text == "first":
+                first_handler_called.set()
+                await asyncio.Event().wait()
+            if event.text == "second":
+                adapter.mark_session_gateway_handler_entered(sk)
+                second_processed.set()
+            return f"handled:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("first"))
+        await asyncio.wait_for(first_handler_called.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+
+        assert adapter._session_lock_stale_reason(sk) == "pre_handler_task_stalled"
+
+        await adapter.handle_message(_make_event("second"))
+        await asyncio.wait_for(second_processed.wait(), timeout=1.0)
+
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert handler_calls == ["first", "second"]
+        assert sk not in adapter._pending_messages
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_live_task_after_gateway_progress_is_not_pre_handler_stale(self):
+        """Long-running claimed gateway turns are owned by runner/agent timeouts, not adapter heal."""
         adapter = _make_adapter()
         sk = _session_key()
         adapter._pre_handler_guard_grace_seconds = 0.01
@@ -354,6 +394,7 @@ class TestStaleSessionLockSelfHeal:
         async def _handler(event):
             handler_calls.append(event.text)
             if event.text == "first":
+                adapter.mark_session_gateway_handler_entered(sk)
                 handler_entered.set()
                 await release_handler.wait()
             return f"handled:{event.text}"
