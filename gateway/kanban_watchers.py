@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import sqlite3
@@ -443,6 +444,19 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: artifact delivery for %s failed: %s",
                                         sub["task_id"], art_exc,
                                     )
+                                try:
+                                    await self._offer_post_task_new_button_for_kanban_completion(
+                                        adapter=adapter,
+                                        platform=plat,
+                                        sub=sub,
+                                        msg=msg,
+                                    )
+                                except Exception as new_exc:
+                                    logger.debug(
+                                        "kanban notifier: post-task New button for %s failed: %s",
+                                        sub["task_id"], new_exc,
+                                        exc_info=True,
+                                    )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -572,6 +586,55 @@ class GatewayKanbanWatchersMixin:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _offer_post_task_new_button_for_kanban_completion(
+        self,
+        *,
+        adapter: Any,
+        platform: Any,
+        sub: dict,
+        msg: str,
+    ) -> bool:
+        """Offer the generic post-task ``New`` affordance after Kanban completion.
+
+        The reset affordance is session UX, not a property of the normal agent
+        response path.  Kanban completion notifications are user-visible task
+        completions too, so route them through the same policy-aware helper used
+        after ordinary successful Telegram turns instead of making the user type
+        ``/new`` manually.
+        """
+        if not hasattr(adapter, "send_new_session_button"):
+            return False
+        send_button = getattr(self, "_send_post_task_new_button_now", None)
+        if not callable(send_button):
+            return False
+        thread_id = sub.get("thread_id") or None
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=platform,
+            chat_id=sub["chat_id"],
+            chat_type="forum" if thread_id else "group",
+            thread_id=thread_id,
+            user_id=sub.get("user_id"),
+            profile=(sub.get("notifier_profile") or None),
+        )
+        result = send_button(
+            source=source,
+            agent_result={"final_response": msg, "completed": True},
+            reply_to_message_id=None,
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        sent = bool(result)
+        if sent:
+            logger.debug(
+                "kanban notifier: offered post-task New button for %s on %s/%s",
+                sub.get("task_id"),
+                sub.get("platform"),
+                sub.get("chat_id"),
+            )
+        return bool(sent)
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,
