@@ -25,7 +25,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.response_filters import (
+    is_gateway_control_marker_response,
     is_intentional_silence_response,
+    is_partial_gateway_control_marker,
     is_partial_silence_marker,
 )
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
@@ -89,6 +91,14 @@ def test_partial_predicate_agrees_with_exact_on_full_markers():
         assert is_intentional_silence_response(marker) is True
 
 
+def test_gateway_control_predicates_cover_reaction_only_markers():
+    marker = "REACTION_ONLY: 👍"
+    assert is_gateway_control_marker_response(marker) is True
+    assert is_partial_gateway_control_marker("REACTION_ONLY:") is True
+    assert is_partial_gateway_control_marker(marker) is True
+
+
+
 # --------------------------------------------------------------------------
 # GatewayStreamConsumer — end-to-end suppression through run()
 # --------------------------------------------------------------------------
@@ -143,6 +153,23 @@ class TestStreamedSilenceSuppression:
         assert consumer.final_response_sent is False
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_reaction_only_marker_stream_is_suppressed(self):
+        """A reaction-only control marker must not be streamed as visible text."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta("REACTION_ONLY: 👍")
+        consumer.finish()
+        await consumer.run()
+
+        for text in _sent_and_edited(adapter):
+            assert "REACTION_ONLY" not in text, f"marker leaked: {text!r}"
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
 
     @pytest.mark.asyncio
     async def test_partial_marker_preview_is_retracted(self):

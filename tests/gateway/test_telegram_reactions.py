@@ -274,6 +274,36 @@ async def test_clear_reactions_returns_false_without_bot(monkeypatch):
     assert result is False
 
 
+@pytest.mark.asyncio
+async def test_send_reaction_only_response_sets_reaction_when_lifecycle_disabled(monkeypatch):
+    """Reaction-only replies are independent of telegram.reactions lifecycle config."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    event = _make_event()
+
+    result = await adapter.send_reaction_only_response(event, "👍")
+
+    assert result.success is True
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="👍",
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_skips_lifecycle_after_reaction_only(monkeypatch):
+    """Do not overwrite a custom reaction-only emoji with the lifecycle 👍/👎."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+    event.metadata["_hermes_reaction_only_response"] = "👀"
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 

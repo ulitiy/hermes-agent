@@ -33,8 +33,8 @@ from gateway.config import (
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
 from gateway.response_filters import (
-    is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker,
+    is_gateway_control_marker_response as _is_gateway_control_marker_response,
+    is_partial_gateway_control_marker as _is_partial_gateway_control_marker,
 )
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -603,17 +603,14 @@ class GatewayStreamConsumer:
                 if got_done:
                     self._flush_think_buffer()
 
-                    # Intentional-silence suppression.  When the agent chose
-                    # not to reply it emits a bare control marker (NO_REPLY /
-                    # [SILENT] / …).  The gateway's whole-response filter
-                    # (gateway/run.py) suppresses this on the non-streaming
-                    # path, but by the time it runs the stream consumer has
-                    # already edited the raw marker onto the screen.  Detect
-                    # the exact-marker final buffer here and retract any
-                    # preview instead of finalizing it, so the marker never
-                    # reaches the chat.  Substantive prose that merely mentions
-                    # a marker is NOT suppressed (see is_intentional_silence_response).
-                    if _is_intentional_silence_response(
+                    # Gateway control marker suppression.  When the agent emits
+                    # a bare control response (NO_REPLY / [SILENT] /
+                    # REACTION_ONLY: …), the non-streaming gateway suppresses
+                    # the marker at the delivery boundary.  By the time that
+                    # runs, the stream consumer may already have edited the raw
+                    # marker onto the screen, so detect exact final control
+                    # buffers here and retract any preview instead.
+                    if _is_gateway_control_marker_response(
                         self._clean_for_display(self._accumulated)
                     ):
                         await self._suppress_silence_marker()
@@ -652,7 +649,7 @@ class GatewayStreamConsumer:
                     and not got_done
                     and not got_segment_break
                     and commentary_text is None
-                    and _is_partial_silence_marker(
+                    and _is_partial_gateway_control_marker(
                         self._clean_for_display(self._accumulated)
                     )
                 ):

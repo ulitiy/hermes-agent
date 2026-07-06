@@ -9624,6 +9624,22 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] clear reactions failed: %s", self.name, e)
             return False
 
+    async def send_reaction_only_response(self, event: MessageEvent, emoji: str) -> SendResult:
+        """React to the inbound Telegram message without sending a text reply."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id):
+            return SendResult(
+                success=False,
+                error="reaction-only reply missing Telegram chat_id/message_id",
+            )
+        ok = await self._set_reaction(chat_id, message_id, emoji)
+        return SendResult(
+            success=ok,
+            message_id=str(message_id) if ok else None,
+            error=None if ok else "Telegram set_message_reaction failed",
+        )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -9646,6 +9662,8 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
+        if getattr(event, "metadata", {}).get("_hermes_reaction_only_response"):
+            return
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
