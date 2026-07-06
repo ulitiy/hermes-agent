@@ -10876,24 +10876,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
                 message_text = f"{context_note}\n\n{message_text}"
 
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
+        # Surface volatile platform message IDs per-turn on the user message
+        # rather than in the cached system prompt. message_id changes every turn,
+        # so baking it into build_session_context_prompt() would bust the
+        # agent-cache signature and rebuild the AIAgent every message (destroying
+        # prompt caching). Static ID blocks can point here; the volatile id rides
+        # the per-turn user content.
+        _triggering_message_id = getattr(event, "message_id", None) or getattr(source, "message_id", None)
+        if source is not None and _triggering_message_id:
+            if getattr(source, "platform", None) == Platform.TELEGRAM:
                 message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
+                    f"[Telegram message id: `{_triggering_message_id}` — this is "
+                    f"the id of the user message that triggered this turn. If you "
+                    f"need to target this exact Telegram message (for a reply, "
+                    f"reaction, or manual Bot API call), use it instead of "
+                    f"searching history. Your normal final response is still "
+                    f"delivered automatically.]\n\n"
                     f"{message_text}"
                 )
+            elif getattr(source, "platform", None) == Platform.DISCORD:
+                from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+                if _disc_tools_loaded():
+                    message_text = (
+                        f"[Triggering message id: `{_triggering_message_id}` — use as "
+                        f"`message_id` for reply/react/pin via the discord tools.]\n\n"
+                        f"{message_text}"
+                    )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
