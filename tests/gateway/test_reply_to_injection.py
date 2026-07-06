@@ -138,6 +138,48 @@ async def test_no_prefix_without_reply_context():
 
 
 @pytest.mark.asyncio
+async def test_telegram_message_id_injected_when_present():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(text="hello", source=source, message_id="12345")
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith("[Telegram message id: `12345`")
+    assert "use it instead of searching history" in result
+    assert result.endswith("hello")
+
+
+@pytest.mark.asyncio
+async def test_reply_prefix_stays_outermost_when_telegram_message_id_present():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="this one",
+        source=source,
+        message_id="12345",
+        reply_to_message_id="42",
+        reply_to_text="Use the direct train.",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to: "Use the direct train."]')
+    assert "[Telegram message id: `12345`" in result
+    assert result.endswith("this one")
+
+
+@pytest.mark.asyncio
 async def test_no_prefix_when_reply_to_text_is_empty():
     """reply_to_message_id alone without text (e.g. a reply to a media-only
     message) should not produce an empty `[Replying to: ""]` prefix."""
