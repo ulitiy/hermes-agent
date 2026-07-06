@@ -7,6 +7,7 @@ Topic roles select policy without changing the transport's home or identity.
 from __future__ import annotations
 
 import copy
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -81,7 +82,7 @@ class GatewayNewSessionMixin:
         policy = self._load_new_session_policy(source)
         return policy if policy.post_task_new_button else None
 
-    async def _send_post_task_new_button_now(self, *, source, agent_result, reply_to_message_id=None):
+    async def _send_post_task_new_button_now(self, *, source, agent_result, reply_to_message_id=None, metadata=None):
         policy = self._post_task_new_button_policy(source, agent_result)
         adapter = self._adapter_for_source(source)
         if policy is None or not callable(getattr(adapter, "send_new_session_button", None)):
@@ -89,9 +90,29 @@ class GatewayNewSessionMixin:
         result = await adapter.send_new_session_button(
             source.chat_id, text=policy.post_task_new_button_text,
             button_label=policy.post_task_new_button_label,
-            metadata=self._thread_metadata_for_source(source, reply_to_message_id),
+            metadata=metadata if metadata is not None else self._thread_metadata_for_source(source, reply_to_message_id),
         )
         return result is None or result.success
+
+    async def _offer_post_task_new_button_for_kanban_completion(self, *, adapter, platform, sub, msg):
+        from gateway.session import SessionSource
+
+        if not callable(getattr(adapter, "send_new_session_button", None)):
+            return False
+        metadata = dict(sub.get("delivery_metadata") or {})
+        if sub.get("thread_id"):
+            metadata.setdefault("thread_id", sub["thread_id"])
+        source = SessionSource(
+            platform=platform, chat_id=sub["chat_id"],
+            chat_type=sub.get("chat_type") or metadata.get("chat_type") or "group",
+            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"),
+            profile=sub.get("notifier_profile") or None,
+        )
+        source._transport_adapter_ref = weakref.ref(adapter)
+        with self._profile_scope_for_source(source):
+            return await self._send_post_task_new_button_now(
+                source=source, agent_result={"final_response": msg, "completed": True}, metadata=metadata,
+            )
 
     def _register_post_task_new_button(self, *, source, session_key, run_generation, agent_result):
         policy = self._post_task_new_button_policy(source, agent_result)
