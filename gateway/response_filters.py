@@ -7,6 +7,7 @@ conversation history.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Canonical model-emitted control token for intentional silence.
@@ -22,9 +23,70 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "NO REPLY",
 })
 
+REACTION_ONLY_REPLY_TOKEN = "REACTION_ONLY"
+_REACTION_ONLY_RE = re.compile(
+    r"^\s*REACTION_ONLY\s*:\s*(?P<emoji>\S+)\s*$",
+    re.IGNORECASE,
+)
+
+# Telegram only accepts a finite reaction emoji set.  Keep the model-facing
+# surface intentionally small: enough for Sprout acknowledgements, but not an
+# arbitrary emoji transport.  Common status glyphs are normalized to standard
+# Telegram reactions so a prompt can say "✅" while the Bot API receives "👍".
+REACTION_ONLY_EMOJI_ALIASES = {
+    "✅": "👍",
+    "☑️": "👍",
+    "✔️": "👍",
+    "❌": "👎",
+    "✖️": "👎",
+    "❤️": "❤",
+}
+REACTION_ONLY_ALLOWED_EMOJI = frozenset({
+    "👍",
+    "👎",
+    "👀",
+    "❤",
+    "🙏",
+    "👌",
+    "👏",
+    "🎉",
+    "🤝",
+    "💯",
+})
+
 
 def _canonical_silence_candidate(text: str) -> str:
     return " ".join(text.strip().upper().split())
+
+
+def _normalize_reaction_only_emoji(emoji: str) -> str | None:
+    normalized = REACTION_ONLY_EMOJI_ALIASES.get(emoji, emoji)
+    if normalized in REACTION_ONLY_ALLOWED_EMOJI:
+        return normalized
+    return None
+
+
+def parse_reaction_only_response(response: Any) -> str | None:
+    """Return the normalized emoji for a whole-response reaction marker.
+
+    ``REACTION_ONLY: 👍`` is a gateway control response: the text itself must
+    not be delivered, but the platform adapter may attach the parsed reaction to
+    the inbound message.  Only exact short whole-response markers count — prose
+    that merely mentions the marker remains ordinary text.
+    """
+    if not isinstance(response, str):
+        return None
+    stripped = response.strip()
+    if not stripped or len(stripped) > 64:
+        return None
+    match = _REACTION_ONLY_RE.match(stripped)
+    if not match:
+        return None
+    return _normalize_reaction_only_emoji(match.group("emoji"))
+
+
+def is_reaction_only_response(response: Any) -> bool:
+    return parse_reaction_only_response(response) is not None
 
 
 def is_intentional_silence_response(response: Any) -> bool:
@@ -53,6 +115,15 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return is_intentional_silence_response(response)
 
 
+def is_gateway_control_marker_response(response: Any) -> bool:
+    """Return True for whole-response gateway control markers.
+
+    These are assistant final responses that should not be sent as visible text
+    (currently intentional silence and reaction-only acknowledgement markers).
+    """
+    return is_intentional_silence_response(response) or is_reaction_only_response(response)
+
+
 def is_partial_silence_marker(text: Any) -> bool:
     """Return True while ``text`` could still resolve to a silence marker.
 
@@ -78,3 +149,27 @@ def is_partial_silence_marker(text: Any) -> bool:
     if not candidate:
         return False
     return any(marker.startswith(candidate) for marker in LIVE_GATEWAY_SILENT_MARKERS)
+
+
+def is_partial_reaction_only_marker(text: Any) -> bool:
+    """Return True while ``text`` could still become ``REACTION_ONLY: <emoji>``."""
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped or len(stripped) > 64:
+        return False
+    compact = re.sub(r"\s+", "", stripped.upper())
+    target = f"{REACTION_ONLY_REPLY_TOKEN}:"
+    if target.startswith(compact):
+        return True
+    if not compact.startswith(target):
+        return False
+    emoji = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+    if not emoji:
+        return True
+    return _normalize_reaction_only_emoji(emoji) is not None
+
+
+def is_partial_gateway_control_marker(text: Any) -> bool:
+    """Streaming hold-back predicate for all gateway control markers."""
+    return is_partial_silence_marker(text) or is_partial_reaction_only_marker(text)

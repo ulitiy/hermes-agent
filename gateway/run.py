@@ -10402,10 +10402,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
-                # Skip for empty responses (interrupted / errored) — the
-                # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # Skip for empty/control responses (interrupted, errored, or
+                # gateway side-effect markers such as NO_REPLY/REACTION_ONLY) —
+                # the judge would otherwise continue goals on a non-answer.
+                try:
+                    from gateway.response_filters import is_gateway_control_marker_response
+                    _is_control_response = is_gateway_control_marker_response(_final_text)
+                except Exception:
+                    _is_control_response = False
+                if _final_text.strip() and not _is_control_response:
                     try:
                         session_entry = self.session_store.get_or_create_session(source)
                     except Exception:
@@ -11836,19 +11841,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             response = agent_result.get("final_response") or ""
             try:
-                from gateway.response_filters import is_intentional_silence_agent_result
+                from gateway.response_filters import (
+                    is_intentional_silence_agent_result,
+                    parse_reaction_only_response,
+                )
                 _intentional_silence = is_intentional_silence_agent_result(
                     agent_result, response,
                 )
+                _reaction_only_emoji = (
+                    None if agent_result.get("failed") else parse_reaction_only_response(response)
+                )
             except Exception:
                 _intentional_silence = False
+                _reaction_only_emoji = None
+            _gateway_control_response = _intentional_silence or bool(_reaction_only_emoji)
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
+            if response == "(empty)" and not _gateway_control_response:
                 response = (
                     "⚠️ The model returned no response after processing tool "
                     "results. This can happen with some models — try again or "
@@ -11891,7 +11904,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
+            if not _gateway_control_response:
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
@@ -11946,7 +11959,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
-            if _show_reasoning_effective and response and not _intentional_silence:
+            if _show_reasoning_effective and response and not _gateway_control_response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -12000,7 +12013,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if _footer_line and response and not agent_result.get("already_sent") and not _gateway_control_response:
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -12317,7 +12330,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            if (
+                not _gateway_control_response
+                and self._should_send_voice_reply(
+                    event,
+                    response,
+                    agent_messages,
+                    already_sent=_already_sent,
+                )
+            ):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -12332,7 +12353,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
+                if response and not _gateway_control_response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
                         await self._deliver_media_from_response(
