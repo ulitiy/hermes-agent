@@ -27,6 +27,7 @@ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
+    is_reaction_only_response,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.run_new_session import GatewayNewSessionMixin
@@ -1630,6 +1631,8 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
+        if is_reaction_only_response(response):
+            return response
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
@@ -1952,6 +1955,8 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         Returns the text for the adapter to send, or ``None`` when already delivered."""
         if diagnostic_wake_muted(event):
             return None
+        if not agent_result.get("failed") and is_reaction_only_response(response):
+            return response
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -2287,7 +2292,7 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence and not is_reaction_only_response(response):
                 response = f"{response}\n\n{_footer_line}"
             await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 

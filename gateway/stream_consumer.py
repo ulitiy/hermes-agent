@@ -28,8 +28,8 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
-    is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker)
+    is_gateway_control_marker_response,
+    is_partial_gateway_control_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -567,7 +567,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
-                    if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
+                    if is_gateway_control_marker_response(self._clean_for_display(self._accumulated)):
                         await self._suppress_silence_marker()
                         return
 
@@ -746,7 +746,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
+        return should_edit and not is_partial_gateway_control_marker(
             self._clean_for_display(self._accumulated))
 
     async def _split_first_send(self, tick: _Tick) -> bool:

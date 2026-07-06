@@ -3557,6 +3557,23 @@ class BasePlatformAdapter(SessionProgressMixin, ABC):
     def _on_final_response_sent(self, event, session_key, result, text_content) -> None:
         """Optional adapter feedback index; called on the transport owning the message id."""
 
+    async def send_reaction_only_response(
+        self,
+        event: "MessageEvent",
+        emoji: str,
+    ) -> "SendResult":
+        """Attach ``emoji`` to the inbound message without sending text.
+
+        Platforms that support native message reactions override this.  The
+        default fails closed: the raw control marker is still never delivered as
+        chat text, but the delivery outcome is marked failed so lifecycle hooks
+        and logs can surface that the requested side effect did not happen.
+        """
+        return SendResult(
+            success=False,
+            error=f"Platform '{getattr(self.platform, 'value', self.platform)}' does not support reaction-only replies.",
+        )
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -4610,6 +4627,33 @@ class BasePlatformAdapter(SessionProgressMixin, ABC):
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
                 response = None
+            if response:
+                try:
+                    from gateway.response_filters import parse_reaction_only_response
+                    _reaction_only_emoji = parse_reaction_only_response(response)
+                except Exception:
+                    _reaction_only_emoji = None
+                if _reaction_only_emoji:
+                    event.metadata["_hermes_reaction_only_response"] = _reaction_only_emoji
+                    logger.info(
+                        "[%s] Sending reaction-only response %s to %s",
+                        self.name,
+                        _reaction_only_emoji,
+                        event.source.chat_id,
+                    )
+                    result = await self.send_reaction_only_response(
+                        event,
+                        _reaction_only_emoji,
+                    )
+                    _record_delivery(result)
+                    if result is not None and not getattr(result, "success", False):
+                        logger.warning(
+                            "[%s] Reaction-only response failed for %s: %s",
+                            self.name,
+                            event.source.chat_id,
+                            getattr(result, "error", None),
+                        )
+                    response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:
