@@ -28,7 +28,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
-    reply_expected_metadata,
+    reply_expected_metadata, is_reaction_only_response,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
@@ -302,7 +302,7 @@ class GatewayTurnMixin(GatewayNewSessionMixin, GatewayBackgroundMixin, GatewayTu
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence and not is_reaction_only_response(response):
                 response = f"{response}\n\n{_footer_line}"
             await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 

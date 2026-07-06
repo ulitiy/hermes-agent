@@ -220,6 +220,9 @@ class GatewayTurnPersistenceMixin:
             # the final response duplicates it and leaks messaging-platform formatting into Desktop.
             return response
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
+        from gateway.response_filters import is_reaction_only_response
+        if is_reaction_only_response(response):
+            return response
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
@@ -681,6 +684,9 @@ class GatewayTurnPersistenceMixin:
         Returns the text for the adapter to send, or ``None`` when already delivered."""
         if diagnostic_wake_muted(event):
             return None
+        from gateway.response_filters import is_reaction_only_response
+        if not agent_result.get("failed") and is_reaction_only_response(response):
+            return response
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)

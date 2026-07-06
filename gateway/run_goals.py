@@ -377,7 +377,8 @@ class GatewayGoalsMixin:
         # released with no text, so a --until judge never grades it.
         failed = self._turn_failed()
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip() and not failed:
+        from gateway.response_filters import is_gateway_control_marker_response
+        if final_text.strip() and not failed and not is_gateway_control_marker_response(final_text):
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:

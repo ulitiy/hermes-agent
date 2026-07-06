@@ -28,8 +28,8 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
-    is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker,
+    is_gateway_control_marker_response,
+    is_partial_gateway_control_marker,
     ends_with_partial_silence_marker as _ends_with_partial_silence_marker,
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
@@ -578,7 +578,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
-                    if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
+                    if is_gateway_control_marker_response(self._clean_for_display(self._accumulated)):
                         await self._suppress_silence_marker()
                         return
                     # Drop a closing marker before any overflow split: cut off on its own, it
@@ -795,11 +795,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # only strips complete deliverable tags, so a half-streamed one would be shown, and
         # a media-only reply cleans to "" at finish, which never edits the bubble away.
         cleaned = self._clean_for_display(self._accumulated)
-        return (should_edit and not _is_partial_silence_marker(cleaned)
+        return (should_edit and not is_partial_gateway_control_marker(cleaned)
                 # Raw buffer: the cleaner already drops a COMPLETE trailing marker, but an interim
                 # frame carries the cursor after it, which hides the marker from the cleaner.
                 and not _ends_with_partial_silence_marker(self._accumulated)
                 and not has_pending_media_directive(cleaned))
+
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
