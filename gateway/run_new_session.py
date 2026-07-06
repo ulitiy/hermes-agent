@@ -82,9 +82,10 @@ class GatewayNewSessionMixin:
         policy = self._load_new_session_policy(source)
         return policy if policy.post_task_new_button else None
 
-    async def _send_post_task_new_button_now(self, *, source, agent_result, reply_to_message_id=None, metadata=None):
+    async def _send_post_task_new_button_now(self, *, source, agent_result, reply_to_message_id=None, metadata=None, adapter=None):
         policy = self._post_task_new_button_policy(source, agent_result)
-        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            adapter = self._adapter_for_source(source)
         if policy is None or not callable(getattr(adapter, "send_new_session_button", None)):
             return False
         result = await adapter.send_new_session_button(
@@ -111,7 +112,7 @@ class GatewayNewSessionMixin:
         source._transport_adapter_ref = weakref.ref(adapter)
         with self._profile_scope_for_source(source):
             return await self._send_post_task_new_button_now(
-                source=source, agent_result={"final_response": msg, "completed": True}, metadata=metadata,
+                source=source, agent_result={"final_response": msg, "completed": True}, metadata=metadata, adapter=adapter,
             )
 
     def _register_post_task_new_button(self, *, source, session_key, run_generation, agent_result):
