@@ -1596,7 +1596,15 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+        """Prepend volatile message ids to this user turn, never the cached prompt."""
+        if source is not None and source.platform == Platform.TELEGRAM and event.message_id:
+            message_text = (
+                f"[Telegram message id: `{event.message_id}` — this is the id of the user message "
+                "that triggered this turn. For a reply or reaction, use it instead of searching history. "
+                "Your normal final response is still delivered automatically.]\n\n"
+                f"{message_text}"
+            )
+
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
