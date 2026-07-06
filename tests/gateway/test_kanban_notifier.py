@@ -145,6 +145,47 @@ def test_kanban_completion_offers_generic_post_task_new_button(tmp_path, monkeyp
     ]
 
 
+def test_kanban_completion_new_button_uses_owned_profile_adapter(tmp_path, monkeypatch):
+    db_path = tmp_path / "profile-owned-new-button.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned completion", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-beta",
+            thread_id="8",
+            notifier_profile="beta",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    default_adapter = RecordingAdapter()
+    beta_adapter = RecordingAdapter()
+    runner = _make_runner(default_adapter)
+    setattr(runner, "_profile_adapters", {"beta": {Platform.TELEGRAM: beta_adapter}})
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert default_adapter.sent == []
+    assert default_adapter.new_buttons == []
+    assert len(beta_adapter.sent) == 1
+    assert tid in beta_adapter.sent[0]["text"]
+    assert beta_adapter.new_buttons == [
+        {
+            "chat_id": "chat-beta",
+            "text": "Готово. Новая тема?",
+            "button_label": "New",
+            "metadata": {"thread_id": "8"},
+        }
+    ]
+
+
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
     db_path = tmp_path / "single-owner.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
