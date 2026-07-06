@@ -4595,7 +4595,6 @@ class BasePlatformAdapter(SessionProgressMixin, ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
-            self.mark_session_gateway_handler_entered(session_key)
             response = await self._message_handler(event)
             callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
