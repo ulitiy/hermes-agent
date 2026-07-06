@@ -11567,6 +11567,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
+        try:
+            _adapter = self.adapters.get(source.platform)
+            _mark_gateway_progress = getattr(
+                _adapter,
+                "mark_session_gateway_handler_entered",
+                None,
+            )
+            if callable(_mark_gateway_progress):
+                _mark_gateway_progress(_quick_key)
+        except Exception:
+            logger.debug(
+                "Failed to mark adapter gateway progress for %s",
+                _quick_key,
+                exc_info=True,
+            )
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's

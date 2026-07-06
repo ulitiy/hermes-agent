@@ -2370,11 +2370,13 @@ class BasePlatformAdapter(ABC):
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Guard/progress timestamps for adapter-level self-heal.  A guard with
-        # no owner task, or with a live owner task that never reaches the gateway
-        # message handler, is not a healthy active turn; it is a pre-dispatch
+        # no owner task, or with a live owner task that never reaches durable
+        # gateway progress, is not a healthy active turn; it is a pre-dispatch
         # lock that will trap future updates behind _pending_messages forever.
-        # Keep long-running LLM/tool turns out of this path by marking
-        # _session_handler_entered_at immediately before _message_handler().
+        # Keep long-running LLM/tool turns out of this path by having
+        # GatewayRunner mark _session_handler_entered_at only after the real
+        # gateway turn pipeline is entered, not merely before calling the
+        # adapter's generic _message_handler callback.
         self._session_guard_started_at: Dict[str, float] = {}
         self._session_handler_entered_at: Dict[str, float] = {}
         self._ownerless_session_guard_grace_seconds: float = _float_env(
@@ -4445,6 +4447,22 @@ class BasePlatformAdapter(ABC):
             return 0.0
         return max(0.0, now - started_at)
 
+    def mark_session_gateway_handler_entered(self, session_key: str) -> None:
+        """Mark that ``session_key`` reached durable gateway processing.
+
+        ``BasePlatformAdapter`` cannot know whether its generic
+        ``_message_handler`` callback has merely been invoked or whether the
+        gateway has actually entered the turn pipeline. Marking before the
+        callback is too early: if the callback stalls in its prologue, the
+        adapter sees a healthy owner task forever and queues future messages
+        behind it. GatewayRunner calls this once it reaches its agent-turn
+        boundary; tests with stub handlers can call it directly to model a
+        healthy long-running turn.
+        """
+        self._ensure_session_progress_tracking()
+        if session_key in self._active_sessions:
+            self._session_handler_entered_at[session_key] = time.monotonic()
+
     def _session_lock_stale_reason(self, session_key: str) -> Optional[str]:
         """Classify stale adapter guards without touching healthy agent turns."""
         self._ensure_session_progress_tracking()
@@ -4467,9 +4485,9 @@ class BasePlatformAdapter(ABC):
         if done and done():
             return "owner_task_done"
 
-        # A live task is healthy only after it reaches the gateway handler.
-        # Before that boundary, a wedged lifecycle hook / setup await traps the
-        # session at adapter level while gateway_state.active_agents remains 0.
+        # A live task is healthy only after it reaches durable gateway progress.
+        # Before that boundary, a wedged lifecycle hook / handler prologue traps
+        # the session at adapter level while gateway_state.active_agents remains 0.
         if session_key not in self._session_handler_entered_at:
             grace = max(
                 0.0,
@@ -4690,6 +4708,7 @@ class BasePlatformAdapter(ABC):
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
+            self.mark_session_gateway_handler_entered(session_key)
             response = await self._message_handler(event)
             _text, _eph_ttl = self._unwrap_ephemeral(response)
             # Send the response BEFORE cancelling the old task so the send
@@ -5019,12 +5038,11 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
 
-            # Call the handler (this can take a while with tool calls).  This
-            # timestamp is the adapter→gateway boundary used by stale-lock
-            # self-heal: once set, long-running work is a real agent turn and
-            # must be handled by runner/agent timeouts, not adapter pre-handler
-            # recovery.
-            self._session_handler_entered_at[session_key] = time.monotonic()
+            # Call the handler (this can take a while with tool calls). Do NOT
+            # mark gateway progress here: this adapter callback can still stall
+            # in the gateway prologue before any durable turn claim. The runner
+            # marks progress itself once the real gateway turn pipeline is
+            # entered.
             response = await self._message_handler(event)
             # The handler is responsible for registering callbacks and binding
             # the run generation to this event. Snapshot it now, before the
