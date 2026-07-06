@@ -1,8 +1,9 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -10,9 +11,20 @@ from hermes_cli import kanban_db as kb
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.new_buttons = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def send_new_session_button(self, chat_id, *, text, button_label, metadata=None):
+        self.new_buttons.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "button_label": button_label,
+                "metadata": metadata or {},
+            }
+        )
 
 
 class DisconnectedAdapters(dict):
@@ -40,6 +52,15 @@ def _make_runner(adapter):
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._kanban_sub_fail_counts = {}
+    setattr(
+        runner,
+        "session_store",
+        SimpleNamespace(
+            config=GatewayConfig(
+                default_reset_policy=SessionResetPolicy(post_task_new_button=True)
+            )
+        ),
+    )
     return runner
 
 
@@ -86,6 +107,42 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     assert len(adapter.sent) == 1
     assert "Kanban" in adapter.sent[0]["text"]
     assert tid in adapter.sent[0]["text"]
+
+
+def test_kanban_completion_offers_generic_post_task_new_button(tmp_path, monkeypatch):
+    db_path = tmp_path / "completion-new-button.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="completed work", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="8",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
+    assert adapter.new_buttons == [
+        {
+            "chat_id": "chat-1",
+            "text": "Готово. Новая тема?",
+            "button_label": "New",
+            "metadata": {"thread_id": "8"},
+        }
+    ]
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
