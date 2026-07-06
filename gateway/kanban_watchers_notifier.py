@@ -707,6 +707,13 @@ class _KanbanNotification:
                 )
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+        if ev.kind == "completed":
+            try:
+                await self.runner._offer_post_task_new_button_for_kanban_completion(
+                    adapter=adapter, platform=self.plat, sub=sub, msg=msg,
+                )
+            except Exception:
+                logger.debug("kanban notifier: New affordance failed for %s", self.task_id, exc_info=True)
         return True
 
     async def _send_pings(self) -> bool:
