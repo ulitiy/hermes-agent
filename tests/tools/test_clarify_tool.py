@@ -44,6 +44,31 @@ class TestClarifyToolBasics:
         assert result["choices_offered"] == ["1", "2", "3"]
         assert result["user_response"] == "2"
 
+    def test_context_is_sent_with_prompt_before_question(self):
+        """Decision prompts must be self-contained on gateway/mobile surfaces."""
+        seen = {}
+
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            seen["question"] = question
+            seen["choices"] = choices
+            return "Apply it"
+
+        result = json.loads(clarify_tool(
+            "Which option should I do?",
+            choices=["Apply it", "Leave it"],
+            context="I found and fixed the watcher bug. Tests passed.",
+            callback=mock_callback,
+        ))
+
+        assert seen["question"] == (
+            "I found and fixed the watcher bug. Tests passed.\n\n"
+            "Which option should I do?"
+        )
+        assert seen["choices"] == ["Apply it", "Leave it"]
+        assert result["question"] == "Which option should I do?"
+        assert result["context"] == "I found and fixed the watcher bug. Tests passed."
+        assert result["user_response"] == "Apply it"
+
     def test_empty_question_returns_error(self):
         """Should return error for empty question."""
         result = json.loads(clarify_tool("", callback=lambda q, c: "ignored"))
@@ -248,6 +273,13 @@ class TestClarifySchema:
     def test_schema_choices_optional(self):
         """Choices parameter should be optional."""
         assert "choices" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+    def test_schema_has_context_for_self_contained_prompts(self):
+        """Agents should have a dedicated field for findings before buttons."""
+        props = CLARIFY_SCHEMA["parameters"]["properties"]
+        assert "context" in props
+        assert "self-contained" in props["context"]["description"]
+        assert "context" not in CLARIFY_SCHEMA["parameters"]["required"]
 
     def test_schema_choices_max_items(self):
         """Schema should specify max items for choices."""
