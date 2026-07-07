@@ -56,6 +56,7 @@ def _flatten_choice(c) -> str:
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
+    context: Optional[str] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """
@@ -65,6 +66,10 @@ def clarify_tool(
         question: The question text to present.
         choices:  Up to 4 predefined answer choices. When omitted the
                   question is purely open-ended.
+        context:  Optional explanatory body to show before the question. Use
+                  this when the user needs findings/status/trade-offs before
+                  picking a choice; gateway surfaces deliver the clarify
+                  prompt itself while the agent is blocked waiting.
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
@@ -76,6 +81,8 @@ def clarify_tool(
         return tool_error("Question text is required.")
 
     question = question.strip()
+    context = context.strip() if isinstance(context, str) else ""
+    display_question = f"{context}\n\n{question}" if context else question
 
     # Validate and trim choices
     if choices is not None:
@@ -99,7 +106,7 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        user_response = callback(display_question, choices)
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
@@ -108,6 +115,7 @@ def clarify_tool(
 
     return json.dumps({
         "question": question,
+        "context": context or None,
         "choices_offered": choices,
         "user_response": str(user_response).strip(),
     }, ensure_ascii=False)
@@ -137,6 +145,11 @@ CLARIFY_SCHEMA = {
         "into the question string render as dead prose the user can't pick. "
         "Right: question='Which deployment target?', choices=['staging', "
         "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
+        "If you have already done work and the user needs your findings, "
+        "status, or trade-offs before deciding, put that explanation in "
+        "`context`. Do not rely on normal assistant prose before a clarify "
+        "tool call being visible on gateway/mobile surfaces; the clarify "
+        "prompt must be self-contained.\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -154,7 +167,19 @@ CLARIFY_SCHEMA = {
                 "description": (
                     "The question itself, and ONLY the question (e.g. 'Which "
                     "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
+                    "— pass them as separate elements in `choices`. If the user "
+                    "needs findings/status before answering, put that in "
+                    "`context`, not in `question`."
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": (
+                    "Optional explanatory body shown before `question`. Use it "
+                    "for a concise answer, findings, current status, trade-offs, "
+                    "or why the decision is needed. This is sent in the same "
+                    "gateway/mobile message as the buttons, so the prompt is "
+                    "self-contained. Do NOT put selectable options here."
                 ),
             },
             "choices": {
@@ -185,6 +210,7 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
+        context=args.get("context"),
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",
