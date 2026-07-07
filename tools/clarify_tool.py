@@ -76,8 +76,11 @@ def _normalize_questions(questions) -> tuple:
                 return None, (f"questions[{index}].choices has {len(choices)} entries but all are blank. "
                               "Send real labels, or omit choices to ask open-ended.")
             choices = cleaned or None
+        explanation = item.get("context")
+        explanation = explanation.strip() if isinstance(explanation, str) else ""
         normalized.append({
-            "qid": f"q{index}", "question": text,
+            "qid": f"q{index}", "question": f"{explanation}\n\n{text}" if explanation else text,
+            "raw_question": text, "context": explanation or None,
             "choices": mark_recommended(list(choices)) if choices else None,
             "choices_offered": list(choices) if choices else None,
             "multi_select": bool(item.get("multi_select")) and bool(choices)})
@@ -100,7 +103,8 @@ def _result(normalized: list[dict], reply: dict) -> str:
     responses = []
     for entry in normalized:
         status, value = _response_status(entry["qid"], answers, entry["multi_select"])
-        responses.append({"question": entry["question"], "choices_offered": entry["choices_offered"],
+        responses.append({"question": entry["raw_question"], "choices_offered": entry["choices_offered"],
+                          **({"context": entry["context"]} if entry["context"] else {}),
                           "status": status, "user_response": value})
     result: dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
     if reply.get("notice"):
@@ -154,7 +158,9 @@ CLARIFY_SCHEMA = {
         "cancelled, timed_out or undelivered, with a notice saying why "
         "when the wait ended without a submit. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
-        "confirmation (the terminal tool handles that)."
+        "confirmation (the terminal tool handles that). Put findings, status, "
+        "and trade-offs in each question's `context`; the prompt must be "
+        "self-contained because prior assistant prose may not be visible on gateway/mobile surfaces."
     ),
     "parameters": {
         "type": "object",
@@ -173,6 +179,10 @@ CLARIFY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "question": {"type": "string"},
+                        "context": {
+                            "type": "string",
+                            "description": "Explanatory body shown before the question and buttons: findings, current state, why the decision is needed, and material trade-offs. Do not enumerate selectable options here.",
+                        },
                         "choices": {
                             "type": "array",
                             "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
