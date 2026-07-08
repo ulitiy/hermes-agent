@@ -4995,6 +4995,53 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _typing_indicator_enabled_for_event(self, event: MessageEvent) -> bool:
+        """Return whether this event should start a typing-refresh loop.
+
+        ``PlatformConfig.typing_indicator`` remains the platform-wide switch.
+        ``config.extra.typing_indicator_disabled_threads`` optionally disables
+        the indicator for noisy operator/log topics while leaving it enabled in
+        normal chats. Entries may be bare thread ids (``"3852"``) or fully
+        qualified ``"<chat_id>:<thread_id>"`` values.
+        """
+        if not getattr(self.config, "typing_indicator", True):
+            return False
+
+        extra = getattr(self.config, "extra", {}) or {}
+        if not isinstance(extra, dict):
+            return True
+
+        def _as_strings(value: Any) -> set[str]:
+            if value is None:
+                return set()
+            if isinstance(value, str):
+                values = [part.strip() for part in value.split(",")]
+            elif isinstance(value, (list, tuple, set, frozenset)):
+                values = [str(part).strip() for part in value]
+            else:
+                values = [str(value).strip()]
+            return {part for part in values if part}
+
+        disabled_chats = _as_strings(extra.get("typing_indicator_disabled_chats"))
+        chat_id = str(getattr(event.source, "chat_id", "") or "")
+        if chat_id and chat_id in disabled_chats:
+            return False
+
+        disabled_threads = _as_strings(extra.get("typing_indicator_disabled_threads"))
+        thread_id = str(getattr(event.source, "thread_id", "") or "")
+        if disabled_threads and thread_id:
+            platform = getattr(event.source, "platform", "")
+            platform_value = getattr(platform, "value", platform)
+            candidates = {
+                thread_id,
+                f"{chat_id}:{thread_id}" if chat_id else "",
+                f"{platform_value}:{chat_id}:{thread_id}" if platform_value and chat_id else "",
+            }
+            if disabled_threads.intersection(part for part in candidates if part):
+                return False
+
+        return True
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -5031,7 +5078,7 @@ class BasePlatformAdapter(ABC):
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         typing_task: Optional[asyncio.Task] = None
-        if getattr(self.config, "typing_indicator", True):
+        if self._typing_indicator_enabled_for_event(event):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
             try:
                 _keep_typing_sig = inspect.signature(self._keep_typing)
