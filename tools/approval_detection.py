@@ -1516,10 +1516,12 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    raw_temp_dir = os.path.normpath(tempfile.gettempdir())
+    temp_dir = os.path.realpath(raw_temp_dir)
     basename = os.path.basename(operand)
     return (
-        operand == os.path.join(temp_dir, basename)
+        (operand == os.path.join(temp_dir, basename)
+         or (raw_temp_dir == "/tmp" and operand == os.path.join(raw_temp_dir, basename)))
         and os.path.dirname(os.path.realpath(operand)) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )
