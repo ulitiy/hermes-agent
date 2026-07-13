@@ -34,6 +34,11 @@ def _make_adapter(
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
         extra["exclusive_bot_mentions"] = exclusive_bot_mentions
+    else:
+        # Keep unit tests isolated from TELEGRAM_EXCLUSIVE_BOT_MENTIONS in the
+        # parent environment; production adapters without this explicit key
+        # still fall back to the env var.
+        extra["exclusive_bot_mentions"] = True
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
     if allowed_topics is not None:

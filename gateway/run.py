@@ -11054,11 +11054,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _should_send_stt_transcription_echo(self) -> bool:
         """Whether to send a separate user-visible STT transcript echo.
 
-        Defaults to True: the deterministic transcript belongs in its own
-        platform message (``> 🎙 ...``), not duplicated inside the LLM reply.
-        Users can disable this with ``stt.send_transcription: false``.
+        Defaults to False: many profiles already quote voice transcripts in the
+        final answer, so deterministic `> 🎙 ...` transcript-audit messages are
+        explicit opt-in via ``stt.send_transcription: true``.
         """
-        return bool(getattr(self.config, "stt_send_transcription", True))
+        return bool(getattr(self.config, "stt_send_transcription", False))
 
     def _format_stt_transcription_echo(self, transcripts: List[str]) -> str:
         quote_text = "\n".join(f"> 🎙 {transcript}" for transcript in transcripts)
@@ -13978,8 +13978,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     def _should_echo_stt_transcripts(self) -> bool:
-        """Return whether inbound voice/STT transcripts should be echoed to chat."""
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+        """Backward-compatible alias for the renamed transcript-echo flag."""
+        return self._should_send_stt_transcription_echo()
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -20297,20 +20297,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             pending_text, _audio_paths,
                                         )
                                         pending_text = _enriched
-                                        if _transcripts and self._should_echo_stt_transcripts():
+                                        if _transcripts and self._should_send_stt_transcription_echo():
                                             _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                            for _tx in _transcripts:
-                                                try:
-                                                    await _adapter.send(
-                                                        source.chat_id,
-                                                        f'🎙️ "{_tx}"',
-                                                        metadata=_echo_meta,
-                                                    )
-                                                except Exception as _echo_exc:
-                                                    logger.debug(
-                                                        "Voice-interrupt echo failed (non-fatal): %s",
-                                                        _echo_exc,
-                                                    )
+                                            try:
+                                                await _adapter.send(
+                                                    source.chat_id,
+                                                    self._format_stt_transcription_echo(_transcripts),
+                                                    metadata=_echo_meta,
+                                                )
+                                                pending_text = self._append_voice_transcript_no_echo_instruction(pending_text)
+                                            except Exception as _echo_exc:
+                                                logger.debug(
+                                                    "Voice-interrupt echo failed (non-fatal): %s",
+                                                    _echo_exc,
+                                                )
                                     except Exception as _trans_exc:
                                         logger.warning(
                                             "Voice-interrupt transcription failed: %s", _trans_exc,
@@ -20719,19 +20719,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _pending_text, _audio_paths,
                             )
                             pending = _enriched or None
-                            if _transcripts and self._should_echo_stt_transcripts():
+                            if _transcripts and self._should_send_stt_transcription_echo():
                                 _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                for _tx in _transcripts:
-                                    try:
-                                        await adapter.send(
-                                            source.chat_id,
-                                            f'🎙️ "{_tx}"',
-                                            metadata=_echo_meta,
-                                        )
-                                    except Exception as _echo_exc:
-                                        logger.debug(
-                                            "Voice-drain echo failed (non-fatal): %s", _echo_exc,
-                                        )
+                                try:
+                                    await adapter.send(
+                                        source.chat_id,
+                                        self._format_stt_transcription_echo(_transcripts),
+                                        metadata=_echo_meta,
+                                    )
+                                    if pending:
+                                        pending = self._append_voice_transcript_no_echo_instruction(pending)
+                                except Exception as _echo_exc:
+                                    logger.debug(
+                                        "Voice-drain echo failed (non-fatal): %s", _echo_exc,
+                                    )
                         except Exception as _trans_exc:
                             logger.warning(
                                 "Voice-drain transcription failed: %s", _trans_exc,

@@ -17,9 +17,9 @@ def test_gateway_config_stt_disabled_from_dict_nested():
     assert config.stt_enabled is False
 
 
-def test_gateway_config_stt_transcript_echo_defaults_on():
+def test_gateway_config_stt_transcript_echo_defaults_off():
     config = GatewayConfig.from_dict({"stt": {"enabled": True}})
-    assert config.stt_send_transcription is True
+    assert config.stt_send_transcription is False
     assert config.stt_send_transcription_header == ""
 
 
@@ -213,12 +213,13 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
 
 
 @pytest.mark.asyncio
-async def test_prepare_inbound_message_text_echoes_voice_transcript_by_default():
-    """Voice transcripts are a separate deterministic chat message by default.
+async def test_prepare_inbound_message_text_does_not_echo_voice_transcript_by_default():
+    """STT transcript echo must be explicit opt-in.
 
-    The agent still receives the transcript wrapper in context so it can answer,
-    plus an explicit note not to repeat the already-visible transcript in its
-    final reply.
+    The agent still receives the transcript wrapper in context, but the gateway
+    must not also send a deterministic copy before the model replies. Otherwise
+    profiles that already quote voice transcripts at the top of the final answer
+    show the user the same transcript twice.
     """
     from gateway.run import GatewayRunner
 
@@ -257,16 +258,12 @@ async def test_prepare_inbound_message_text_echoes_voice_transcript_by_default()
 
     assert result is not None
     assert "single visible transcript" in result
-    assert "already been sent" in result
-    echo_adapter.send.assert_awaited_once_with(
-        "123",
-        "> 🎙 single visible transcript",
-        metadata={},
-    )
+    assert "already been sent" not in result
+    echo_adapter.send.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_dequeue_pending_voice_echoes_transcript_by_default():
+async def test_dequeue_pending_voice_does_not_echo_transcript_by_default():
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
@@ -306,12 +303,8 @@ async def test_dequeue_pending_voice_echoes_transcript_by_default():
 
     assert result is not None
     assert "queued transcript once" in result
-    assert "already been sent" in result
-    echo_adapter.send.assert_awaited_once_with(
-        "123",
-        "> 🎙 queued transcript once",
-        metadata={"thread_id": "7"},
-    )
+    assert "already been sent" not in result
+    echo_adapter.send.assert_not_called()
 
 
 @pytest.mark.asyncio
