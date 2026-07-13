@@ -532,6 +532,10 @@ class ACPClient:
             _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
             return "".join(text_parts), "".join(reasoning_parts)
 
+    def _permission_response(self, message_id, params):
+        """Providers may opt into an interactive bridge; the generic transport stays fail-closed."""
+        return _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+
     def _handle_server_message(
         self, msg: dict[str, Any], *, process: subprocess.Popen[str], cwd: str, text_parts: list[str] | None, reasoning_parts: list[str] | None,
         allow_file_requests: bool = True,
@@ -552,7 +556,10 @@ class ACPClient:
             return True
         message_id = msg.get("id")
         if method == "session/request_permission":
-            response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+            response = (
+                self._permission_response(message_id, msg.get("params") or {})
+                if allow_file_requests else _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+            )
         elif method in _FS_HANDLERS:
             if not allow_file_requests:
                 response = _jsonrpc_error(message_id, -32601, "File access is unavailable during model discovery.")

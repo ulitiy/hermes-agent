@@ -56,6 +56,10 @@ def _is_gh_extension_banner(stderr_text: str) -> bool:
 class _DeprecatedCopilotACPClient(ACPClient):
     """ACPClient with the historical launch defaults, labels, model filter and early-exit diagnosis."""
 
+    def _permission_response(self, message_id, params):
+        from agent.acp_permissions import _resolve_permission_request
+        return _resolve_permission_request(message_id, params)
+
     default_command = "copilot"
     default_args = ("--acp", "--stdio")
     command_env_vars = _COMMAND_ENV_VARS
