@@ -3386,5 +3386,97 @@ def request_elicitation_consent(
     return "decline"
 
 
+def request_acp_permission_approval(
+    command: str,
+    description: str,
+    *,
+    pattern_key: str = "acp_permission",
+    pattern_keys: list[str] | None = None,
+    allow_permanent: bool = True,
+    surface: str = "acp-permission",
+    timeout_seconds: int | None = None,
+) -> str:
+    """Route an external ACP ``session/request_permission`` to Hermes UI.
+
+    This is the client-side mirror of the normal dangerous-command gateway
+    approval path, but it intentionally does **not** run Hermes's command
+    detectors: the upstream ACP agent (for example ``codex-acp``) has already
+    decided it needs user permission.  We just present that exact request on
+    the active surface and return Hermes's approval vocabulary:
+    ``"once" | "session" | "always" | "deny" | "cancel"``.
+
+    ``"cancel"`` means no user response / interrupted wait.  Callers should
+    fail closed and avoid treating it as consent.
+    """
+
+    if pattern_keys is None:
+        pattern_keys = [pattern_key]
+
+    # Match the normal approval subsystem: /yolo or approvals.mode=off means
+    # the user intentionally opted out of prompts for this session/process.
+    if is_approval_bypass_active():
+        return "always" if allow_permanent else "session"
+
+    if _is_gateway_approval_context():
+        session_key = get_current_session_key(default="")
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+        if notify_cb is None:
+            logger.warning(
+                "ACP permission requested in gateway session %s but no "
+                "notify_cb is registered — failing closed",
+                session_key,
+            )
+            return "deny"
+
+        from agent.redact import redact_sensitive_text
+
+        approval_data = {
+            "command": redact_sensitive_text(command),
+            "description": redact_sensitive_text(description),
+            "pattern_key": pattern_key,
+            "pattern_keys": list(pattern_keys),
+            "allow_permanent": allow_permanent,
+        }
+        try:
+            decision = _await_gateway_decision(
+                session_key,
+                notify_cb,
+                approval_data,
+                surface=surface,
+            )
+        except Exception as exc:
+            logger.error("ACP permission gateway dispatch failed: %s", exc, exc_info=True)
+            return "deny"
+
+        if decision.get("notify_failed"):
+            return "deny"
+        if not decision.get("resolved"):
+            return "cancel"
+        choice = decision.get("choice")
+        if choice == "always" and not allow_permanent:
+            return "session"
+        if choice in ("once", "session", "always"):
+            return str(choice)
+        return "deny"
+
+    try:
+        choice = prompt_dangerous_approval(
+            command,
+            description,
+            timeout_seconds=timeout_seconds,
+            allow_permanent=allow_permanent,
+        )
+    except Exception as exc:
+        logger.error("ACP permission CLI prompt failed: %s", exc, exc_info=True)
+        return "deny"
+
+    if choice == "always" and not allow_permanent:
+        return "session"
+    if choice in ("once", "session", "always"):
+        return choice
+    return "deny"
+
+
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()

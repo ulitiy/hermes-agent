@@ -57,6 +57,42 @@ class TestApprovalModeParsing:
         assert _normalize_approval_mode(True) == "manual"
 
 
+class TestAcpPermissionApproval:
+    def test_gateway_queue_resolves_acp_permission_choice(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        token = approval_module.set_current_session_key("s-acp")
+        sent = []
+
+        def notify(approval_data):
+            sent.append(dict(approval_data))
+            assert approval_module.has_blocking_approval("s-acp")
+            approval_module.resolve_gateway_approval("s-acp", "session")
+
+        approval_module.register_gateway_notify("s-acp", notify)
+        try:
+            choice = approval_module.request_acp_permission_approval(
+                command="$ cd /repo\n$ docker compose ps",
+                description="Codex ACP requests permission to run a command",
+                pattern_key="acp_permission:execute",
+                allow_permanent=False,
+                surface="codex-acp-permission",
+            )
+        finally:
+            approval_module.unregister_gateway_notify("s-acp")
+            approval_module.reset_current_session_key(token)
+
+        assert choice == "session"
+        assert sent == [
+            {
+                "command": "$ cd /repo\n$ docker compose ps",
+                "description": "Codex ACP requests permission to run a command",
+                "pattern_key": "acp_permission:execute",
+                "pattern_keys": ["acp_permission:execute"],
+                "allow_permanent": False,
+            }
+        ]
+
+
 class TestSmartApproval:
     def test_smart_is_the_default_approval_mode(self):
         from hermes_cli.config import DEFAULT_CONFIG

@@ -155,6 +155,97 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         outcome = (((response.get("result") or {}).get("outcome") or {}).get("outcome"))
         self.assertEqual(outcome, "cancelled")
 
+    def test_request_permission_selects_once_option_from_approval_bridge(self) -> None:
+        with patch("agent.copilot_acp_client.request_acp_permission_approval", return_value="once", create=True) as approval:
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 11,
+                    "method": "session/request_permission",
+                    "params": {
+                        "toolCall": {
+                            "kind": "execute",
+                            "title": "docker compose ps",
+                            "rawInput": {
+                                "command": "docker compose ps",
+                                "cwd": "/repo",
+                            },
+                        },
+                        "options": [
+                            {"optionId": "allow_once", "kind": "allow_once", "name": "Allow Once"},
+                            {"optionId": "allow_always", "kind": "allow_always", "name": "Allow for Session"},
+                            {"optionId": "reject_once", "kind": "reject_once", "name": "Reject"},
+                        ],
+                    },
+                },
+                cwd="/tmp",
+            )
+
+        outcome = (response.get("result") or {}).get("outcome") or {}
+        self.assertEqual(outcome.get("outcome"), "selected")
+        self.assertEqual(outcome.get("optionId"), "allow_once")
+        approval.assert_called_once()
+        call_kwargs = approval.call_args.kwargs
+        self.assertIn("docker compose ps", call_kwargs["command"])
+        self.assertIn("/repo", call_kwargs["command"])
+        self.assertIn("Codex ACP", call_kwargs["description"])
+
+    def test_request_permission_maps_deny_to_reject_option_not_cancel(self) -> None:
+        with patch("agent.copilot_acp_client.request_acp_permission_approval", return_value="deny", create=True):
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 12,
+                    "method": "session/request_permission",
+                    "params": {
+                        "toolCall": {
+                            "kind": "execute",
+                            "rawInput": {"command": "rm -rf build"},
+                        },
+                        "options": [
+                            {"optionId": "allow_once", "kind": "allow_once", "name": "Allow Once"},
+                            {"optionId": "reject_once", "kind": "reject_once", "name": "Reject"},
+                        ],
+                    },
+                },
+                cwd="/tmp",
+            )
+
+        outcome = (response.get("result") or {}).get("outcome") or {}
+        self.assertEqual(outcome.get("outcome"), "selected")
+        self.assertEqual(outcome.get("optionId"), "reject_once")
+
+    def test_request_permission_maps_always_to_codex_policy_amendment_when_available(self) -> None:
+        with patch("agent.copilot_acp_client.request_acp_permission_approval", return_value="always", create=True):
+            response = self._dispatch(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 13,
+                    "method": "session/request_permission",
+                    "params": {
+                        "toolCall": {
+                            "kind": "execute",
+                            "rawInput": {"command": "docker compose ps"},
+                        },
+                        "options": [
+                            {"optionId": "allow_once", "kind": "allow_once", "name": "Allow Once"},
+                            {"optionId": "allow_always", "kind": "allow_always", "name": "Allow for Session"},
+                            {
+                                "optionId": "accept_execpolicy_amendment",
+                                "kind": "allow_always",
+                                "name": "Allow Commands Starting With `docker compose`",
+                            },
+                            {"optionId": "reject_once", "kind": "reject_once", "name": "Reject"},
+                        ],
+                    },
+                },
+                cwd="/tmp",
+            )
+
+        outcome = (response.get("result") or {}).get("outcome") or {}
+        self.assertEqual(outcome.get("outcome"), "selected")
+        self.assertEqual(outcome.get("optionId"), "accept_execpolicy_amendment")
+
     def test_read_text_file_blocks_internal_hermes_hub_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"
