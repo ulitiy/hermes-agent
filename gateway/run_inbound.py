@@ -215,6 +215,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
+        # Legacy topic roles must not claim multiplex transport ownership. Bind
+        # before startup queueing so the eventual replay keeps the chosen role.
+        if not source.profile and not source.behavior_profile:
+            with self._profile_scope_for_source(source):
+                source.behavior_profile = self._load_source_profile(source)
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal

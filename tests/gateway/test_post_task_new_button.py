@@ -30,7 +30,7 @@ class FakeTelegramAdapter:
 
 def _runner_with(config: dict, adapter: FakeTelegramAdapter | None = None):
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner._load_new_session_policy = lambda source: NewSessionPolicy.from_config(config, getattr(source, "behavior_profile", None))
+    runner._load_new_session_policy = lambda source: NewSessionPolicy.from_config(config, source.behavior_profile or source.profile)
     setattr(runner, "adapters", {Platform.TELEGRAM: adapter or FakeTelegramAdapter()})
     return runner
 
@@ -108,7 +108,15 @@ async def test_streamed_turn_sends_post_task_new_button_immediately():
     ]
 
 
-def test_profile_always_fresh_policy_suppresses_post_task_new_button():
+@pytest.mark.parametrize(
+    "profile_kwargs",
+    [
+        {"profile": "admin"},
+        {"behavior_profile": "admin"},
+    ],
+    ids=["transport-profile", "behavior-profile"],
+)
+def test_profile_always_fresh_policy_suppresses_post_task_new_button(profile_kwargs):
     runner = _runner_with(
         {"session_reset": {"post_task_new_button": True, "by_profile": {
             "admin": {"mode": "always", "notify": False, "post_task_new_button": False},
@@ -120,8 +128,8 @@ def test_profile_always_fresh_policy_suppresses_post_task_new_button():
         chat_id="-1001",
         chat_type="forum",
         thread_id="1",
+        **profile_kwargs,
     )
-    source.behavior_profile = "admin"
 
     assert runner._post_task_new_button_policy(
         source,
