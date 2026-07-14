@@ -198,6 +198,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
+        # Legacy topic roles must not claim multiplex transport ownership. Bind
+        # before startup queueing so the eventual replay keeps the chosen role.
+        if not source.profile and not source.behavior_profile:
+            with self._profile_scope_for_source(source):
+                source.behavior_profile = self._load_source_profile(source)
+
         # An admission the authority is executing is already ordered by its durable FIFO; parking it
         # here would settle the row with no turn and replay the input outside it (GW-2).
         from gateway.session_ingress import executing_admission

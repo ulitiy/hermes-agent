@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform
 from gateway.run_new_session import NewSessionPolicy
 from gateway.session import SessionSource, SessionStore
@@ -26,9 +28,24 @@ def test_get_reset_policy_prefers_profile_override():
     assert policy.post_task_new_button is True
 
 
-def test_always_reset_policy_starts_each_turn_in_fresh_session(tmp_path):
+@pytest.mark.parametrize(
+    "profile_kwargs",
+    [
+        {"profile": "task-manager"},
+        {"behavior_profile": "task-manager"},
+        {"profile": "transport", "behavior_profile": "task-manager"},
+    ],
+    ids=["transport-profile", "behavior-profile", "behavior-over-transport"],
+)
+def test_profile_always_reset_policy_starts_each_turn_fresh(tmp_path, monkeypatch, profile_kwargs):
+    from gateway.run import GatewayRunner, _profile_runtime_scope
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "session_reset:\n  by_profile:\n    task-manager:\n      mode: always\n      notify: false\n"
+    )
+    runner = GatewayRunner.__new__(GatewayRunner)
     cfg = GatewayConfig()
-    policy = NewSessionPolicy(mode="always", notify=False)
     store = SessionStore(sessions_dir=tmp_path, config=cfg)
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -36,7 +53,12 @@ def test_always_reset_policy_starts_each_turn_in_fresh_session(tmp_path):
         chat_type="forum",
         thread_id="107",
         user_id="42",
+        **profile_kwargs,
     )
+
+    with _profile_runtime_scope(tmp_path, {}):
+        policy = runner._load_new_session_policy(source)
+    assert policy.mode == "always"
 
     first = store.get_or_create_session(source)
     first.last_prompt_tokens = 123
