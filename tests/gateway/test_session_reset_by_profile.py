@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from gateway.config import GatewayConfig, SessionResetPolicy, Platform
-from gateway.session import SessionSource, SessionStore
+from gateway.session import SessionSource, SessionStore, source_policy_profile
 
 
 def test_get_reset_policy_prefers_profile_override():
@@ -27,7 +29,26 @@ def test_get_reset_policy_prefers_profile_override():
     assert policy.post_task_new_button is True
 
 
-def test_always_reset_policy_starts_each_turn_in_fresh_session(tmp_path):
+def test_behavior_profile_takes_precedence_for_policy_selection():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        profile="default",
+        behavior_profile="admin",
+    )
+
+    assert source_policy_profile(source) == "admin"
+
+
+@pytest.mark.parametrize(
+    "profile_kwargs",
+    [
+        {"profile": "task-manager"},
+        {"behavior_profile": "task-manager"},
+    ],
+    ids=["transport-profile", "behavior-profile"],
+)
+def test_profile_always_reset_policy_starts_each_turn_fresh(tmp_path, profile_kwargs):
     cfg = GatewayConfig(
         reset_by_profile={
             "task-manager": SessionResetPolicy(mode="always", notify=False),
@@ -40,8 +61,10 @@ def test_always_reset_policy_starts_each_turn_in_fresh_session(tmp_path):
         chat_type="forum",
         thread_id="107",
         user_id="42",
-        profile="task-manager",
+        **profile_kwargs,
     )
+
+    assert source_policy_profile(source) == "task-manager"
 
     first = store.get_or_create_session(source)
     first.last_prompt_tokens = 123

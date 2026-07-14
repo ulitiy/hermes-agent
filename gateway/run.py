@@ -1780,6 +1780,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    source_policy_profile,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -5014,6 +5015,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if source is None:
             return None
+        bound_profile = getattr(source, "behavior_profile", None)
+        if bound_profile:
+            return str(bound_profile)
 
         from hermes_cli.profiles import normalize_profile_name
 
@@ -9442,11 +9446,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
-        if source is not None and not getattr(source, "profile", None):
+        # Bind topic role/config separately from multiplex transport ownership.
+        # Progress/auth/session routing reads ``source.profile`` and must stay on
+        # the inbound adapter; behavior loaders and reset policy use this field.
+        if (
+            source is not None
+            and not getattr(source, "profile", None)
+            and not getattr(source, "behavior_profile", None)
+        ):
             try:
-                routed_profile = self._load_source_profile(source)
-                if routed_profile:
-                    source.profile = routed_profile
+                source.behavior_profile = self._load_source_profile(source)
             except Exception:
                 logger.debug("profile-by-thread resolution failed", exc_info=True)
 
@@ -10939,7 +10948,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             policy = self.session_store.config.get_reset_policy(
                 platform=source.platform,
                 session_type=getattr(source, "chat_type", "dm"),
-                profile=getattr(source, "profile", None),
+                profile=source_policy_profile(source),
             )
         except Exception:
             return None
@@ -11800,7 +11809,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 policy = self.session_store.config.get_reset_policy(
                     platform=source.platform,
                     session_type=getattr(source, 'chat_type', 'dm'),
-                    profile=getattr(source, 'profile', None),
+                    profile=source_policy_profile(source),
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)

@@ -116,7 +116,15 @@ async def test_streamed_turn_sends_post_task_new_button_immediately():
     ]
 
 
-def test_profile_always_fresh_policy_suppresses_post_task_new_button():
+@pytest.mark.parametrize(
+    "profile_kwargs",
+    [
+        {"profile": "admin"},
+        {"behavior_profile": "admin"},
+    ],
+    ids=["transport-profile", "behavior-profile"],
+)
+def test_profile_always_fresh_policy_suppresses_post_task_new_button(profile_kwargs):
     runner = _runner_with(
         GatewayConfig(
             default_reset_policy=SessionResetPolicy(post_task_new_button=True),
@@ -135,7 +143,7 @@ def test_profile_always_fresh_policy_suppresses_post_task_new_button():
         chat_id="-1001",
         chat_type="forum",
         thread_id="1",
-        profile="admin",
+        **profile_kwargs,
     )
 
     assert runner._post_task_new_button_policy(

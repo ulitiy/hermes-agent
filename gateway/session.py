@@ -181,6 +181,11 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Topic-level role/config overlay (for example telegram.profile_by_thread).
+    # This is deliberately separate from ``profile``: it may select model,
+    # reasoning, SOUL, and reset policy, but never adapter ownership, auth,
+    # session-key namespacing, or HERMES_HOME credential scope.
+    behavior_profile: Optional[str] = None
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -263,6 +268,8 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.behavior_profile:
+            d["behavior_profile"] = self.behavior_profile
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -288,10 +295,17 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            behavior_profile=data.get("behavior_profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
-    
+
+
+def source_policy_profile(source: Optional[SessionSource]) -> Optional[str]:
+    """Resolve behavior/policy profile without changing transport ownership."""
+    if source is None:
+        return None
+    return getattr(source, "behavior_profile", None) or getattr(source, "profile", None)
 
 
 @dataclass
@@ -1579,7 +1593,7 @@ class SessionStore:
         policy = self.config.get_reset_policy(
             platform=entry.platform,
             session_type=entry.chat_type,
-            profile=getattr(entry.origin, "profile", None),
+            profile=source_policy_profile(entry.origin),
         )
 
         if policy.mode in {"none", "always"}:
@@ -1630,7 +1644,7 @@ class SessionStore:
             policy = self.config.get_reset_policy(
                 platform=entry.platform,
                 session_type=entry.chat_type,
-                profile=getattr(entry.origin, "profile", None),
+                profile=source_policy_profile(entry.origin),
             )
             return policy.mode not in {"none", "always"}
         except Exception:
@@ -1683,7 +1697,7 @@ class SessionStore:
         policy = self.config.get_reset_policy(
             platform=source.platform,
             session_type=source.chat_type,
-            profile=getattr(source, "profile", None),
+            profile=source_policy_profile(source),
         )
         
         if policy.mode == "none":

@@ -24,6 +24,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
+from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -183,6 +184,70 @@ class TestLoadSourceProfile:
         runner = _make_runner()
         source = _make_event_source(chat_id="-100999", thread_id="2")
         assert runner._load_source_profile(source) == "engineer"
+
+    def test_behavior_overlay_does_not_claim_transport_profile(self, tmp_path, monkeypatch):
+        """Topic role routing must not masquerade as multiplex adapter ownership."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        _write_root_config(
+            hermes_home,
+            "telegram:\n"
+            "  profile_by_thread:\n"
+            "    '2': engineer\n",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        default_adapter = MagicMock()
+        runner.adapters = {Platform.TELEGRAM: default_adapter}
+        runner._profile_adapters = {}
+        runner._startup_restore_in_progress = True
+        runner._queue_startup_restore_event = MagicMock()
+
+        source = _make_event_source(thread_id="2")
+        event = MessageEvent(text="ping", source=source)
+        asyncio.run(runner._handle_message(event))
+
+        assert source.profile is None
+        assert source.behavior_profile == "engineer"
+        assert runner._adapter_for_source(source) is default_adapter
+
+    def test_multiplex_source_skips_default_topic_behavior_overlay(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        _write_root_config(
+            hermes_home,
+            "telegram:\n"
+            "  profile_by_thread:\n"
+            "    '2': engineer\n",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        coder_adapter = MagicMock()
+        runner.adapters = {Platform.TELEGRAM: MagicMock()}
+        runner._profile_adapters = {
+            "coder": {Platform.TELEGRAM: coder_adapter},
+        }
+        runner._startup_restore_in_progress = True
+        runner._queue_startup_restore_event = MagicMock()
+
+        source = _make_event_source(thread_id="2")
+        source.profile = "coder"
+        event = MessageEvent(text="ping", source=source)
+        asyncio.run(runner._handle_message(event))
+
+        assert source.behavior_profile is None
+        assert runner._adapter_for_source(source) is coder_adapter
+
+    def test_behavior_profile_roundtrips_without_transport_ownership(self):
+        source = _make_event_source(thread_id="2")
+        source.behavior_profile = "engineer"
+
+        restored = SessionSource.from_dict(source.to_dict())
+
+        assert restored.profile is None
+        assert restored.behavior_profile == "engineer"
 
 
 # ---------------------------------------------------------------------------
