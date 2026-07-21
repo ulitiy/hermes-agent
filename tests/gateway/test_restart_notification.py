@@ -1,5 +1,6 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -28,6 +29,13 @@ def test_restart_notification_pending_false_without_marker(tmp_path, monkeypatch
 def test_restart_notification_pending_true_with_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / ".restart_notify.json").write_text("{}")
+
+    assert gateway_run._restart_notification_pending() is True
+
+
+def test_restart_notification_pending_true_with_claimed_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.claimed.json").write_text("{}")
 
     assert gateway_run._restart_notification_pending() is True
 
@@ -481,6 +489,170 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     # File cleaned up even though send raised.
     assert delivered_target is None
     assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_retains_retryable_sendresult_failure(
+    tmp_path, monkeypatch
+):
+    """Transient startup failures keep the durable marker for a later retry."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        ),
+    )
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    assert not notify_path.exists()
+    assert (tmp_path / ".restart_notify.claimed.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_watcher_retries_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    """The startup watcher retries a transient failure and delivers exactly once."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(side_effect=[
+        SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        ),
+        SendResult(success=True, message_id="restart-ok"),
+    ])
+
+    assert await runner._send_restart_notification() is None
+    await runner._watch_restart_notification(
+        initial_delay=0,
+        max_delay=0,
+        timeout=1,
+    )
+
+    assert adapter.send.await_count == 2
+    assert not notify_path.exists()
+    assert not (tmp_path / ".restart_notify.claimed.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_watcher_drains_claimed_and_new_pending_markers(
+    tmp_path, monkeypatch
+):
+    """A recovered claimed marker must not strand a newer restart marker."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    claimed_path = tmp_path / ".restart_notify.claimed.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "99",
+    }))
+    claimed_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(side_effect=[
+        SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        ),
+        SendResult(success=True, message_id="old-marker"),
+        SendResult(success=True, message_id="new-marker"),
+    ])
+
+    assert await runner._send_restart_notification() is None
+    await runner._watch_restart_notification(
+        initial_delay=0,
+        max_delay=0,
+        timeout=1,
+    )
+
+    assert [call.args[0] for call in adapter.send.await_args_list] == ["42", "42", "99"]
+    assert not notify_path.exists()
+    assert not claimed_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_watcher_stops_during_gateway_shutdown(
+    tmp_path, monkeypatch
+):
+    """Shutdown preserves the marker instead of sending through torn-down adapters."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="late"))
+
+    await runner._watch_restart_notification(
+        initial_delay=0,
+        max_delay=0,
+        timeout=1,
+    )
+
+    adapter.send.assert_not_awaited()
+    assert notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_cancellation_retains_claimed_marker(
+    tmp_path, monkeypatch
+):
+    """Shutdown cancellation must not lose an in-flight durable notification."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    send_started = asyncio.Event()
+
+    async def _blocking_send(*_args, **_kwargs):
+        send_started.set()
+        await asyncio.Event().wait()
+
+    adapter.send = AsyncMock(side_effect=_blocking_send)
+
+    task = asyncio.create_task(runner._send_restart_notification())
+    await send_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not notify_path.exists()
+    assert (tmp_path / ".restart_notify.claimed.json").exists()
 
 
 @pytest.mark.asyncio

@@ -1301,7 +1301,13 @@ def _home_thread_env_var(platform_name: str) -> str:
 
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
-    return (_hermes_home / ".restart_notify.json").exists()
+    return any(
+        (_hermes_home / name).exists()
+        for name in (
+            ".restart_notify.json",
+            ".restart_notify.claimed.json",
+        )
+    )
 
 
 def _planned_restart_notification_path() -> Path:
@@ -7833,6 +7839,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _restart_notification_pending() or planned_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
+        if _restart_notification_pending():
+            self._schedule_restart_notification_watch()
 
         # Broadcast a lightweight "gateway is back" message to configured home
         # channels only for non-chat planned restarts (terminal/SIGUSR1/service
@@ -15689,14 +15697,101 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
-        notify_path = _hermes_home / ".restart_notify.json"
-        if not notify_path.exists():
-            return None
+    def _schedule_restart_notification_watch(self) -> None:
+        """Ensure one bounded background retry loop owns the restart marker."""
+        existing_task = getattr(self, "_restart_notification_task", None)
+        if existing_task is not None and not existing_task.done():
+            return
 
         try:
-            data = json.loads(notify_path.read_text())
+            task = asyncio.create_task(self._watch_restart_notification())
+        except RuntimeError:
+            logger.debug("Skipping restart notification watcher: no running event loop")
+            return
+
+        self._restart_notification_task = task
+        self._background_tasks.add(task)
+
+        def _clear_finished_restart_watcher(finished: asyncio.Task) -> None:
+            self._background_tasks.discard(finished)
+            if getattr(self, "_restart_notification_task", None) is finished:
+                self._restart_notification_task = None
+
+        task.add_done_callback(_clear_finished_restart_watcher)
+
+    async def _watch_restart_notification(
+        self,
+        *,
+        initial_delay: float = 1.0,
+        max_delay: float = 8.0,
+        timeout: float = 45.0,
+    ) -> None:
+        """Retry a transient restart notification with bounded backoff.
+
+        The durable marker remains on timeout so a later gateway startup can
+        recover it; this process stops retrying after ``timeout`` to avoid an
+        unbounded background loop when a platform remains unhealthy.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        delay = max(0.0, initial_delay)
+        max_delay = max(0.0, max_delay)
+
+        while _restart_notification_pending() and loop.time() < deadline:
+            if not getattr(self, "_running", False) or getattr(self, "_draining", False):
+                return
+            remaining = max(0.0, deadline - loop.time())
+            await asyncio.sleep(min(delay, remaining))
+            if not getattr(self, "_running", False) or getattr(self, "_draining", False):
+                return
+            if not _restart_notification_pending():
+                return
+
+            delivered = await self._send_restart_notification()
+            if not _restart_notification_pending():
+                return
+            if delivered is not None:
+                # A recovered claimed marker can coexist with a newer pending
+                # marker. Drain the next marker immediately instead of ending
+                # the watcher after the first successful delivery.
+                delay = 0.0
+                continue
+
+            if delay <= 0:
+                delay = max_delay
+            else:
+                delay = min(max_delay, delay * 2)
+
+        if _restart_notification_pending():
+            logger.warning(
+                "Restart notification retry timed out after %.1fs; "
+                "marker retained for the next gateway startup",
+                timeout,
+            )
+
+    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
+        """Notify the chat that initiated /restart that the gateway is back.
+
+        The pending marker is atomically claimed before delivery. Explicitly
+        retryable adapter failures remain in that durable claimed state so
+        startup races (notably Telegram waiting for first getUpdates progress)
+        can be retried by the startup watcher without overwriting a newer marker.
+        """
+        notify_path = _hermes_home / ".restart_notify.json"
+        claimed_path = _hermes_home / ".restart_notify.claimed.json"
+        if not notify_path.exists() and not claimed_path.exists():
+            return None
+
+        cleanup = True
+        try:
+            if not claimed_path.exists():
+                try:
+                    notify_path.replace(claimed_path)
+                except FileNotFoundError:
+                    if not claimed_path.exists():
+                        return None
+
+            data = json.loads(claimed_path.read_text())
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
@@ -15741,12 +15836,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
             if result is not None and getattr(result, "success", True) is False:
-                logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s",
-                    platform_str,
-                    chat_id,
-                    getattr(result, "error", "send returned success=False"),
-                )
+                error = getattr(result, "error", "send returned success=False")
+                if getattr(result, "retryable", False):
+                    cleanup = False
+                    logger.info(
+                        "Restart notification to %s:%s deferred for retry: %s",
+                        platform_str,
+                        chat_id,
+                        error,
+                    )
+                else:
+                    logger.warning(
+                        "Restart notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        error,
+                    )
                 return None
 
             logger.info(
@@ -15755,11 +15860,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
             )
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+        except asyncio.CancelledError:
+            cleanup = False
+            raise
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if cleanup:
+                claimed_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,
