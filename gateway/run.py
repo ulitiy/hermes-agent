@@ -1545,7 +1545,9 @@ def _home_thread_env_var(platform_name: str) -> str:
 
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
-    return (_hermes_home / ".restart_notify.json").exists()
+    return any((_hermes_home / name).exists() for name in (
+        ".restart_notify.json", ".restart_notify.claimed.json",
+    ))
 
 
 def _planned_restart_notification_path() -> Path:
