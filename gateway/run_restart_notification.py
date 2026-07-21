@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 
 from gateway.config import Platform
 from gateway.run_shutdown import _send_error, _send_failed
@@ -55,6 +56,14 @@ class GatewayRestartNotificationMixin:
             logger.warning("Restart notification retry timed out after %.1fs; marker retained for the next gateway startup", timeout)
 
     async def _send_restart_notification(self) -> tuple[str, str, str | None] | None:
+        """Serialize all delivery paths in this runner (remote acceptance is at-least-once)."""
+        lock = getattr(self, "_restart_notification_lock", None)
+        if lock is None:
+            lock = self._restart_notification_lock = asyncio.Lock()
+        async with lock:
+            return await self._send_restart_notification_locked()
+
+    async def _send_restart_notification_locked(self) -> tuple[str, str, str | None] | None:
         """Atomically claim a marker without overwriting a newer pending notice."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
@@ -76,14 +85,24 @@ class GatewayRestartNotificationMixin:
             if not platform_str or not chat_id:
                 return None
             platform = Platform(platform_str)
-            transport = resolve_delivery_transport(
-                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
-            if transport is None:
-                logger.debug("Restart notification skipped: no live transport for %s", platform_str)
-                return None
-            platform_cfg = self.config.platforms.get(platform)
+            profile = self._marker_profile(data)
+            adapters = self._adapters_for_profile(profile)
+            secondary = profile in (getattr(self, "_profile_adapters", None) or {})
+            # The primary's enabled/notification flags do not govern a secondary bot.
+            config = replace(self.config, platforms={p: a.config for p, a in adapters.items()}) if secondary else self.config
+            transport = resolve_delivery_transport(platform, config, adapters)
+            platform_cfg = config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info("Restart notification suppressed: %s has gateway_restart_notification=false", platform_str)
+                return None
+            if transport is None:
+                # A missing secondary must never borrow the primary's bot/retry queue.
+                pending = (
+                    (getattr(self, "_profile_failed_platforms", None) or {}).get(profile, {})
+                    if secondary else (getattr(self, "_failed_platforms", None) or {})
+                )
+                cleanup = not (platform in pending or Platform.RELAY in pending)
+                logger.debug("Restart notification has no live transport for %s (retry=%s)", platform_str, not cleanup)
                 return None
             metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)
             if data.get("delivered_via_upstream_relay") is True:
@@ -91,10 +110,16 @@ class GatewayRestartNotificationMixin:
                 for field in ("user_id", "scope_id"):
                     if data.get(field):
                         metadata[field] = str(data[field])
-            result = await transport.send(
-                platform, str(chat_id), t("gateway.startup.restarted"),
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
+            try:
+                result = await transport.send(
+                    platform, str(chat_id), t("gateway.startup.restarted"),
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+            except Exception as exc:
+                cleanup = False
+                logger.warning("Restart notification to %s:%s raised; deferred for retry: %s", platform_str, chat_id, exc)
+                return None
+
             if _send_failed(result):
                 cleanup = not bool(getattr(result, "retryable", False))
                 logger.log(
