@@ -5,12 +5,15 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
+import gateway.run as gateway_run
+from tests.gateway.restart_test_helpers import make_restart_runner
 
 
 def _ensure_telegram_mock():
@@ -118,3 +121,38 @@ async def test_successful_reconnect_waits_for_get_updates_progress(monkeypatch):
     assert adapter._polling_network_error_count == 0
     result = await adapter.send("123", "hello")
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_retries_after_real_polling_progress(
+    tmp_path, monkeypatch
+):
+    """Cold-poll degradation retains restart work until getUpdates progresses."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    claimed_path = tmp_path / ".restart_notify.claimed.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "123",
+    }))
+
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    runner, _adapter = make_restart_runner(adapter)
+    generation, _progress = adapter._begin_polling_generation()
+
+    assert await runner._send_restart_notification() is None
+    bot.send_message.assert_not_awaited()
+    assert claimed_path.exists()
+
+    adapter._record_polling_progress(generation)
+    await runner._watch_restart_notification(
+        initial_delay=0,
+        max_delay=0,
+        timeout=1,
+    )
+
+    bot.send_message.assert_awaited_once()
+    assert not claimed_path.exists()

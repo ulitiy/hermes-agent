@@ -8466,6 +8466,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 
+                        # The bounded startup watcher may have expired while this
+                        # adapter was reconnecting. Re-arm durable restart delivery
+                        # now that a usable adapter exists; the scheduler is a
+                        # singleton if the original watcher is still alive.
+                        if _restart_notification_pending():
+                            self._schedule_restart_notification_watch()
+
                         # Rebuild channel directory with the new adapter
                         try:
                             from gateway.channel_directory import build_channel_directory
@@ -15770,12 +15777,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
+        """Serialize restart-marker delivery within the live gateway process."""
+        lock = getattr(self, "_restart_notification_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._restart_notification_lock = lock
+
+        async with lock:
+            return await self._send_restart_notification_locked()
+
+    async def _send_restart_notification_locked(
+        self,
+    ) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back.
 
-        The pending marker is atomically claimed before delivery. Explicitly
-        retryable adapter failures remain in that durable claimed state so
-        startup races (notably Telegram waiting for first getUpdates progress)
-        can be retried by the startup watcher without overwriting a newer marker.
+        The process-wide gateway runtime lock prevents overlapping live gateway
+        processes; the asyncio lock above prevents concurrent delivery paths in
+        this runner. Retryable failures remain in the durable claimed state so
+        startup races can be retried without overwriting a newer pending marker.
+        Provider APIs do not offer a shared idempotency key here, so crash or
+        cancellation after remote acceptance remains intentionally at-least-once.
         """
         notify_path = _hermes_home / ".restart_notify.json"
         claimed_path = _hermes_home / ".restart_notify.claimed.json"
@@ -15802,19 +15823,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-            if not adapter:
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is None or not platform_cfg.enabled:
                 logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
+                    "Restart notification skipped: %s is no longer configured",
                     platform_str,
                 )
                 return None
 
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false",
                     platform_str,
+                )
+                return None
+
+            adapter = self.adapters.get(platform)
+            if not adapter:
+                failed_platforms = getattr(self, "_failed_platforms", {})
+                if platform not in failed_platforms:
+                    logger.debug(
+                        "Restart notification skipped: %s adapter is unavailable "
+                        "and not queued for reconnect",
+                        platform_str,
+                    )
+                    return None
+                cleanup = False
+                logger.info(
+                    "Restart notification to %s:%s deferred: adapter reconnect pending",
+                    platform_str,
+                    chat_id,
                 )
                 return None
 
@@ -15826,11 +15864,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
+            try:
+                result = await adapter.send(
+                    str(chat_id),
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                cleanup = False
+                logger.warning(
+                    "Restart notification to %s:%s raised; deferred for retry: %s",
+                    platform_str,
+                    chat_id,
+                    exc,
+                )
+                return None
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise
