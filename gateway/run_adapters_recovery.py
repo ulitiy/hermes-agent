@@ -281,6 +281,9 @@ class GatewaySecondaryReconnectMixin:
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
+                            from gateway.run import _restart_notification_pending
+                            if _restart_notification_pending():
+                                self._schedule_restart_notification_watch()
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
                             )

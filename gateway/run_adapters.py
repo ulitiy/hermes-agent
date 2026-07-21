@@ -916,6 +916,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_planned_restart_replay()
+        # Notification delivery must not hold up adapter recovery or other platforms' reconnects.
+        from gateway.run import _restart_notification_pending
+        if _restart_notification_pending():
+            self._schedule_restart_notification_watch()
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",

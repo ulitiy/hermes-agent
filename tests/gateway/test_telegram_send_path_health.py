@@ -7,6 +7,7 @@ but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 """
 import asyncio
 import time
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,8 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+import gateway.run as gateway_run
+from tests.gateway.restart_test_helpers import make_restart_runner
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -227,3 +230,38 @@ def test_record_polling_progress_does_not_flip_when_not_running_or_fatal(running
 
     write_status.assert_not_called()
     assert adapter._send_path_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_retries_after_real_polling_progress(
+    tmp_path, monkeypatch
+):
+    """Cold-poll degradation retains restart work until getUpdates progresses."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    claimed_path = tmp_path / ".restart_notify.claimed.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "123",
+    }))
+
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    runner, _adapter = make_restart_runner(adapter)
+    generation, _progress = adapter._begin_polling_generation()
+
+    assert await runner._send_restart_notification() is None
+    bot.send_message.assert_not_awaited()
+    assert claimed_path.exists()
+
+    adapter._record_polling_progress(generation)
+    await runner._watch_restart_notification(
+        initial_delay=0,
+        max_delay=0,
+        timeout=1,
+    )
+
+    bot.send_message.assert_awaited_once()
+    assert not claimed_path.exists()

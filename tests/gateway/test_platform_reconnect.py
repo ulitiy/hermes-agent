@@ -73,6 +73,7 @@ def _make_runner():
     runner._honcho_managers = {}
     runner._honcho_configs = {}
     runner._shutdown_all_gateway_honcho = lambda: None
+    runner._schedule_restart_notification_watch = MagicMock()
     runner.session_store = MagicMock()
     # A bare MagicMock attribute is os.fspath()-able as the RELATIVE path "MagicMock/<name>/<id>":
     # startup's heartbeat restore treats ``_routing_home`` as the launch home and would build a
@@ -159,6 +160,39 @@ class TestStartupPlatformIsolation:
 class TestPlatformReconnectWatcher:
     """Test the _platform_reconnect_watcher background task."""
 
+
+    @pytest.mark.asyncio
+    async def test_reconnect_rearms_pending_restart_notification(self):
+        """A reconnect after the bounded watcher expired must re-arm delivery."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._schedule_restart_notification_watch = MagicMock()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run._restart_notification_pending", return_value=True):
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(_seconds):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        runner._schedule_restart_notification_watch.assert_called_once_with()
+        assert Platform.TELEGRAM in runner.adapters
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_is_reconnect_true(self):
