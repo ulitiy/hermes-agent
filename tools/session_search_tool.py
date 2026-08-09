@@ -31,6 +31,7 @@ support.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -54,6 +55,11 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+
+_TELEGRAM_DEEP_LINK_RE = re.compile(
+    r"^https?://(?:www\.)?(?:t\.me|telegram\.me)/c/(?P<path>\d+(?:/\d+){1,2})/?(?:\?.*)?$",
+    re.IGNORECASE,
+)
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -496,6 +502,194 @@ def _title_match_result(
     return entry
 
 
+def _parse_telegram_deep_link(query: str) -> Optional[Dict[str, Optional[str]]]:
+    """Parse a private Telegram message link into its routing identifiers."""
+    if not isinstance(query, str):
+        return None
+    match = _TELEGRAM_DEEP_LINK_RE.fullmatch(query.strip())
+    if not match:
+        return None
+    parts = match.group("path").split("/")
+    internal_chat_id = parts[0]
+    if len(parts) == 2:
+        thread_id = None
+        message_id = parts[1]
+    else:
+        thread_id = parts[1]
+        message_id = parts[2]
+    return {
+        "chat_id": f"-100{internal_chat_id}",
+        "thread_id": thread_id,
+        "message_id": message_id,
+    }
+
+
+def _telegram_deep_link_unresolved(
+    query: str,
+    link: Dict[str, Optional[str]],
+    message: str,
+) -> str:
+    return json.dumps({
+        "success": True,
+        "mode": "telegram_deeplink",
+        "query": query,
+        "resolution": "unresolved",
+        "telegram": link,
+        "results": [],
+        "count": 0,
+        "message": message,
+    }, ensure_ascii=False)
+
+
+def _telegram_deep_link_hit(
+    db,
+    *,
+    query: str,
+    link: Dict[str, Optional[str]],
+    resolution: str,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+    anchor: Optional[Dict[str, Any]],
+    snippet: str,
+    message: Optional[str] = None,
+) -> str:
+    """Return one Telegram resolution in the normal discovery result shape."""
+    session_meta = db.get_session(session_id) or {}
+    anchor_id = anchor.get("id") if anchor else None
+    view = (
+        db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
+        if anchor_id is not None
+        else {}
+    )
+    result = {
+        "session_id": session_id,
+        "when": _format_timestamp(session_meta.get("started_at")),
+        "source": session_meta.get("source") or "telegram",
+        "model": session_meta.get("model") or "unknown",
+        "title": session_meta.get("title") or None,
+        "matched_role": anchor.get("role") if anchor else None,
+        "match_message_id": anchor_id,
+        "snippet": snippet,
+        "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
+        "messages": [
+            _shape_message(m, anchor_id=anchor_id)
+            for m in (view.get("window") or messages)
+        ],
+        "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+        "messages_before": view.get("messages_before", 0),
+        "messages_after": view.get("messages_after", 0),
+    }
+    response = {
+        "success": True,
+        "mode": "telegram_deeplink",
+        "query": query,
+        "resolution": resolution,
+        "telegram": link,
+        "results": [result],
+        "count": 1,
+    }
+    if message:
+        response["message"] = message
+    return json.dumps(response, ensure_ascii=False)
+
+
+def _telegram_deep_link_result(
+    db,
+    query: str,
+    link: Dict[str, Optional[str]],
+) -> str:
+    """Resolve a Telegram deep-link from exact or nearby persisted metadata."""
+    indexed = db.lookup_telegram_outbound_message(
+        chat_id=link["chat_id"],
+        message_id=link["message_id"],
+    )
+    if indexed:
+        if link.get("thread_id") and str(indexed.get("thread_id")) != link["thread_id"]:
+            return _telegram_deep_link_unresolved(
+                query, link, "Telegram message index belongs to a different topic."
+            )
+        session_id = indexed.get("session_id")
+        if not session_id or not db.get_session(session_id):
+            return _telegram_deep_link_unresolved(
+                query,
+                link,
+                "Telegram message index does not reference an available session.",
+            )
+        messages = db.get_messages(session_id)
+        snippet = " ".join(str(indexed.get("snippet") or "").split())
+        anchor = next(
+            (
+                item
+                for item in reversed(messages)
+                if item.get("role") == "assistant"
+                and snippet
+                and " ".join(str(item.get("content") or "").split()).startswith(snippet)
+            ),
+            None,
+        )
+        if anchor is None:
+            anchor = next(
+                (item for item in reversed(messages) if item.get("role") == "assistant"),
+                messages[-1] if messages else None,
+            )
+        return _telegram_deep_link_hit(
+            db,
+            query=query,
+            link=link,
+            resolution="exact_outbound",
+            session_id=session_id,
+            messages=messages,
+            anchor=anchor,
+            snippet=indexed.get("snippet") or "",
+        )
+
+    inbound = db.find_telegram_inbound_message_near(
+        chat_id=str(link["chat_id"]),
+        thread_id=link.get("thread_id"),
+        message_id=str(link["message_id"]),
+    )
+    if not inbound:
+        return _telegram_deep_link_unresolved(
+            query, link, "Telegram message ID is not indexed in session history."
+        )
+
+    session_id = inbound["session_id"]
+    messages = db.get_messages(session_id)
+    inbound_id = inbound["id"]
+    anchor = next((item for item in messages if item.get("id") == inbound_id), None)
+    resolution = "exact_inbound"
+    response_message = None
+    if inbound.get("relation") == "before":
+        resolution = "approximate_outbound"
+        seen_inbound = False
+        for item in messages:
+            if item.get("id") == inbound_id:
+                seen_inbound = True
+                continue
+            if not seen_inbound:
+                continue
+            if item.get("role") == "user":
+                break
+            if item.get("role") == "assistant" and item.get("content"):
+                anchor = item
+        response_message = (
+            "The exact outbound Telegram message ID was not persisted; "
+            "showing the assistant turn after nearby inbound message "
+            f"{inbound['telegram_message_id']} (approximate match)."
+        )
+    return _telegram_deep_link_hit(
+        db,
+        query=query,
+        link=link,
+        resolution=resolution,
+        session_id=session_id,
+        messages=messages,
+        anchor=anchor,
+        snippet=(anchor or {}).get("content") or inbound.get("content") or "",
+        message=response_message,
+    )
+
+
 def _discover(
     db,
     query: str,
@@ -718,6 +912,10 @@ def session_search(
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
 
+    telegram_link = _parse_telegram_deep_link(query)
+    if telegram_link:
+        return _telegram_deep_link_result(db, query.strip(), telegram_link)
+
     # Parse role_filter
     role_list: Optional[List[str]] = None
     if isinstance(role_filter, str) and role_filter.strip():
@@ -781,7 +979,10 @@ SESSION_SEARCH_SCHEMA = {
         "(the resolution / decisions)\n"
         "       - match_message_id, messages_before, messages_after\n"
         "     Bookends + window together let you reconstruct goal → match → resolution "
-        "without paying for the whole transcript.\n\n"
+        "without paying for the whole transcript. To resolve a Telegram deep-link, "
+        "pass the full `https://t.me/c/<chat>/<topic>/<message>` URL as `query`; the "
+        "result says whether the message mapping is exact or an approximate nearby "
+        "turn recovered from historical inbound metadata.\n\n"
         "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
         "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
         "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
@@ -822,7 +1023,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
+                    "expressions to find in past sessions, or a Telegram deep-link "
+                    "(`https://t.me/c/...`) to resolve directly. Omit to browse recent "
                     "sessions. Ignored when session_id + around_message_id are set "
                     "(scroll shape)."
                 ),

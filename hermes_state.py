@@ -5355,6 +5355,118 @@ class SessionDB:
             )
             return cursor.fetchone() is not None
 
+    def find_telegram_inbound_message_near(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        thread_id: Optional[str] = None,
+        max_gap: int = 20,
+    ) -> Optional[Dict[str, Any]]:
+        """Find the exact or nearest preceding Telegram user turn.
+
+        Successful gateway turns historically embedded Telegram's message ID
+        in the stored user content without populating ``platform_message_id``.
+        This lookup accepts either representation, scopes candidates to the
+        link's chat/topic, and only returns an approximate predecessor when the
+        platform-ID gap is small enough to be useful as a clearly labelled
+        fallback.
+        """
+        try:
+            target_id = int(message_id)
+        except (TypeError, ValueError):
+            return None
+
+        params: List[Any] = [str(chat_id)]
+        if thread_id is None:
+            sql = """
+                SELECT m.id, m.session_id, m.content, m.platform_message_id,
+                       m.timestamp
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.source = 'telegram'
+                  AND s.chat_id = ?
+                  AND (s.thread_id IS NULL OR s.thread_id = '')
+                  AND m.role = 'user'
+                  AND m.active = 1
+                  AND (m.platform_message_id IS NOT NULL
+                       OR m.content LIKE '%Telegram message id:%')
+                ORDER BY m.id ASC
+            """
+        else:
+            sql = """
+                SELECT m.id, m.session_id, m.content, m.platform_message_id,
+                       m.timestamp
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.source = 'telegram'
+                  AND s.chat_id = ?
+                  AND s.thread_id = ?
+                  AND m.role = 'user'
+                  AND m.active = 1
+                  AND (m.platform_message_id IS NOT NULL
+                       OR m.content LIKE '%Telegram message id:%')
+                ORDER BY m.id ASC
+            """
+            params.append(str(thread_id))
+
+        with self._lock:
+            if self._conn is None:
+                return None
+            rows = self._conn.execute(sql, params).fetchall()
+
+        marker_re = re.compile(
+            r"\[Telegram message id:\s*`?(\d+)`?(?=[\s\]—])"
+        )
+        candidates = []
+        for row in rows:
+            platform_id = row["platform_message_id"]
+            try:
+                telegram_id = int(platform_id) if platform_id is not None else None
+            except (TypeError, ValueError):
+                telegram_id = None
+            if telegram_id is None:
+                match = marker_re.search(str(row["content"] or ""))
+                if match:
+                    telegram_id = int(match.group(1))
+            if telegram_id is not None:
+                candidate = dict(row)
+                candidate["telegram_message_id"] = telegram_id
+                candidates.append(candidate)
+
+        if not candidates:
+            return None
+        exact = [row for row in candidates if row["telegram_message_id"] == target_id]
+        if exact:
+            result = exact[-1]
+            result["relation"] = "exact"
+            result["next_telegram_message_id"] = next(
+                (
+                    row["telegram_message_id"]
+                    for row in candidates
+                    if row["telegram_message_id"] > target_id
+                ),
+                None,
+            )
+            return result
+
+        before = [row for row in candidates if row["telegram_message_id"] < target_id]
+        if not before:
+            return None
+        result = max(before, key=lambda row: (row["telegram_message_id"], row["id"]))
+        if target_id - result["telegram_message_id"] > max(0, int(max_gap)):
+            return None
+        result["relation"] = "before"
+        result["next_telegram_message_id"] = next(
+            (
+                row["telegram_message_id"]
+                for row in candidates
+                if row["telegram_message_id"] > target_id
+            ),
+            None,
+        )
+        return result
+
     # =========================================================================
     # Export and cleanup
     # =========================================================================

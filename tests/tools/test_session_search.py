@@ -98,6 +98,11 @@ class TestSchema:
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "no llm" in desc
 
+    def test_schema_description_teaches_telegram_deep_links(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "telegram deep-link" in desc
+        assert "t.me/c/" in desc
+
     def test_schema_description_enforces_source_first_limit(self):
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "source-first limit" in desc
@@ -188,6 +193,114 @@ class TestDiscoveryShape:
         assert result["success"] is True
         assert result["results"] == []
         assert result["count"] == 0
+
+    def test_telegram_deep_link_resolves_indexed_outbound_message(self, db):
+        db.create_session(
+            "s_tg",
+            source="telegram",
+            chat_id="-1003819053296",
+            thread_id="134",
+        )
+        db.set_session_title("s_tg", "Мотомаршруты из Ваке")
+        db.append_message(
+            "s_tg",
+            role="user",
+            content=(
+                "[Telegram message id: `7571` — this is the id of the user message "
+                "that triggered this turn.]\nПредложи двадцать мест."
+            ),
+        )
+        assistant_id = db.append_message(
+            "s_tg",
+            role="assistant",
+            content="Вот топ-20 мотонаправлений из Ваке.",
+        )
+        db.record_telegram_outbound_message(
+            chat_id="-1003819053296",
+            thread_id="134",
+            message_id="7574",
+            session_id="s_tg",
+            snippet="Вот топ-20 мотонаправлений из Ваке.",
+        )
+
+        result = json.loads(
+            session_search(query="https://t.me/c/3819053296/134/7574", db=db)
+        )
+
+        assert result["success"] is True
+        assert result["mode"] == "telegram_deeplink"
+        assert result["resolution"] == "exact_outbound"
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s_tg"
+        assert result["results"][0]["match_message_id"] == assistant_id
+        assert result["results"][0]["messages"][-1]["content"].startswith("Вот топ-20")
+
+    def test_telegram_deep_link_falls_back_to_nearby_inbound_turn(self, db):
+        db.create_session(
+            "s_before",
+            source="telegram",
+            chat_id="-1003819053296",
+            thread_id="134",
+        )
+        db.set_session_title("s_before", "Мотомаршруты из Ваке")
+        db.append_message(
+            "s_before",
+            role="user",
+            content=(
+                "[Telegram message id: `7571` — this is the id of the user message "
+                "that triggered this turn.]\nПредложи двадцать мест."
+            ),
+        )
+        assistant_id = db.append_message(
+            "s_before",
+            role="assistant",
+            content="Вот топ-20 мотонаправлений из Ваке.",
+        )
+        db.create_session(
+            "s_after",
+            source="telegram",
+            chat_id="-1003819053296",
+            thread_id="134",
+        )
+        db.append_message(
+            "s_after",
+            role="user",
+            content="[Telegram message id: `7593`] Следующий вопрос.",
+        )
+
+        result = json.loads(
+            session_search(query="https://t.me/c/3819053296/134/7574", db=db)
+        )
+
+        assert result["success"] is True
+        assert result["mode"] == "telegram_deeplink"
+        assert result["resolution"] == "approximate_outbound"
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s_before"
+        assert result["results"][0]["match_message_id"] == assistant_id
+        assert "not persisted" in result["message"]
+
+    def test_telegram_deep_link_fallback_is_scoped_to_topic(self, db):
+        db.create_session(
+            "s_other_topic",
+            source="telegram",
+            chat_id="-1003819053296",
+            thread_id="999",
+        )
+        db.append_message(
+            "s_other_topic",
+            role="user",
+            content="[Telegram message id: `7571`] Other topic.",
+        )
+        db.append_message("s_other_topic", role="assistant", content="Wrong answer.")
+
+        result = json.loads(
+            session_search(query="https://t.me/c/3819053296/134/7574", db=db)
+        )
+
+        assert result["success"] is True
+        assert result["resolution"] == "unresolved"
+        assert result["results"] == []
 
     def test_query_can_match_session_title_without_message_hit(self, db):
         db.create_session("s_fingerprint", source="cli")
