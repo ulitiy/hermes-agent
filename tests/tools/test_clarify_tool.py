@@ -55,7 +55,7 @@ class TestClarifyToolChoicesValidation:
             return _reply({"q0": "picked"})
 
         many_choices = ["a", "b", "c", "d", "e", "f", "g"]
-        _ask(mock_callback, [{"question": "Pick one", "choices": many_choices}])
+        _ask(mock_callback, [{"question": "Pick one", "choices": many_choices, "context": "A letter selects the next fixture branch."}])
 
         assert len(choices_passed) == MAX_CHOICES
 
@@ -103,6 +103,7 @@ class TestClarifyToolMultiSelect:
 
         result = _ask(mock_callback, [{
             "question": "Which colors?",
+            "context": "Colors control the fixture palette; multiple colors can be combined.",
             "choices": ["red", "blue", "green"],
             "multi_select": True,
         }])
@@ -117,6 +118,7 @@ class TestClarifyToolMultiSelect:
 
         result = _ask(mock_callback, [{
             "question": "Which color?",
+            "context": "The fixture palette needs a color selection.",
             "choices": ["red", "blue"],
             "multi_select": True,
         }])
@@ -141,7 +143,7 @@ class TestClarifyRecommendedLabel:
             seen.extend(questions[0]["choices"] or [])
             return _reply({"q0": seen[1]})
 
-        _ask(cb, [{"question": "Pick", "choices": ["Rebase", "Merge"]}])
+        _ask(cb, [{"question": "Pick", "choices": ["Rebase", "Merge"], "context": "Rebase gives linear history; merge preserves branch history."}])
         assert seen == ["Rebase (Recommended)", "Merge"]
 
     def test_answer_strips_the_label(self):
@@ -149,7 +151,7 @@ class TestClarifyRecommendedLabel:
         def cb(questions):
             return _reply({"q0": questions[0]["choices"][0]})
 
-        result = _ask(cb, [{"question": "Pick", "choices": ["Rebase", "Merge"]}])
+        result = _ask(cb, [{"question": "Pick", "choices": ["Rebase", "Merge"], "context": "Rebase gives linear history; merge preserves branch history."}])
         response = result["responses"][0]
         assert response["user_response"] == "Rebase"
         assert response["choices_offered"] == ["Rebase", "Merge"]
@@ -160,6 +162,7 @@ class TestClarifyRecommendedLabel:
 
         result = _ask(cb, [{
             "question": "Pick some",
+            "context": "These history operations have different commit-retention behavior.",
             "choices": ["Rebase", "Merge", "Squash"],
             "multi_select": True,
         }])
@@ -173,7 +176,7 @@ class TestClarifyRecommendedLabel:
             seen.extend(questions[0]["choices"] or [])
             return _reply({"q0": seen[0]})
 
-        _ask(cb, [{"question": "Confirm", "choices": ["Ship it"]}])
+        _ask(cb, [{"question": "Confirm", "choices": ["Ship it"], "context": "The fixture passed verification; shipping makes it visible."}])
         assert seen == ["Ship it"]
 
     def test_label_is_not_doubled(self):
@@ -184,7 +187,7 @@ class TestClarifyRecommendedLabel:
             seen.extend(questions[0]["choices"] or [])
             return _reply({"q0": seen[0]})
 
-        _ask(cb, [{"question": "Pick", "choices": ["Rebase (recommended)", "Merge"]}])
+        _ask(cb, [{"question": "Pick", "choices": ["Rebase (recommended)", "Merge"], "context": "Rebase gives linear history; merge preserves branch history."}])
         assert seen == ["Rebase (recommended)", "Merge"]
 
     def test_open_ended_unaffected(self):
@@ -211,7 +214,7 @@ class TestRegistryMultiSelectPassThrough:
             return _reply({"q0": ["a", "b"]})
 
         result = json.loads(entry.handler(
-            {"questions": [{"question": "Pick", "choices": ["a", "b"], "multi_select": True}]},
+            {"questions": [{"question": "Pick", "context": "Select the fixture branches to exercise.", "choices": ["a", "b"], "multi_select": True}]},
             callback=cb,
         ))
         assert seen["multi"] is True
@@ -227,7 +230,7 @@ class TestRegistryMultiSelectPassThrough:
             return _reply({"q0": "a"})
 
         result = json.loads(entry.handler(
-            {"questions": [{"question": "Pick", "choices": ["a", "b"]}]},
+            {"questions": [{"question": "Pick", "context": "Select the fixture branch to exercise.", "choices": ["a", "b"]}]},
             callback=cb,
         ))
         assert seen["multi"] is False
@@ -270,7 +273,7 @@ class TestClarifyBatchValidation:
         seen = {}
         choice = "Option A\n" + "detail " * 60
         _ask(lambda questions: seen.setdefault("q", questions) and _reply({"q0": "Option A"}),
-             [{"question": "Pick?", "choices": [choice, "B"]}])
+             [{"question": "Pick?", "choices": [choice, "B"], "context": "The expanded option describes the fixture trade-offs."}])
         assert seen["q"][0]["choices_offered"][0] == choice.strip()
 
     def test_batch_rejects_non_list(self):
@@ -286,8 +289,8 @@ class TestClarifyBatchValidation:
             return _reply({"q0": "a", "q1": "Loose layout"})
 
         _ask(cb, [
-            {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"]},
-            {"question": "Pick layout", "choices": ["Loose layout", "Tight"]},
+            {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"], "context": "The letter identifies a fixture branch."},
+            {"question": "Pick layout", "choices": ["Loose layout", "Tight"], "context": "Layout trades whitespace for information density."},
         ])
         q0, q1 = seen["questions"]
         assert len(q0["choices"]) == MAX_CHOICES
@@ -337,6 +340,7 @@ class TestClarifyBatchDispatch:
 
         result = _ask(cb, [{
             "question": "Colors?",
+            "context": "Select colors to include in the fixture palette.",
             "choices": ["red", "blue", "green"],
             "multi_select": True,
         }])

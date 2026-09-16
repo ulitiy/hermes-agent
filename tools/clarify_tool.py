@@ -13,6 +13,10 @@ MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
+_CONTEXT_REQUIRED = (
+    "Context is required when choices are provided. Explain the findings/current state, "
+    "why a decision is needed, and the material trade-offs before retrying."
+)
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
@@ -78,6 +82,9 @@ def _normalize_questions(questions) -> tuple:
             choices = cleaned or None
         explanation = item.get("context")
         explanation = explanation.strip() if isinstance(explanation, str) else ""
+        # Validate every card before any surface receives a partial batch.
+        if choices and not explanation:
+            return None, f"questions[{index}]: {_CONTEXT_REQUIRED}"
         normalized.append({
             "qid": f"q{index}", "question": f"{explanation}\n\n{text}" if explanation else text,
             "raw_question": text, "context": explanation or None,
@@ -158,8 +165,10 @@ CLARIFY_SCHEMA = {
         "cancelled, timed_out or undelivered, with a notice saying why "
         "when the wait ended without a submit. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
-        "confirmation (the terminal tool handles that). Put findings, status, "
-        "and trade-offs in each question's `context`; the prompt must be "
+        "confirmation (the terminal tool handles that). HARD REQUIREMENT: each question with "
+        "choices must include nonblank `context`, explaining findings/current state, why a "
+        "decision is needed, and material trade-offs before buttons. Calls missing context "
+        "are rejected before any prompt is displayed. Each prompt must be "
         "self-contained because prior assistant prose may not be visible on gateway/mobile surfaces."
     ),
     "parameters": {
@@ -181,7 +190,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "context": {
                             "type": "string",
-                            "description": "Explanatory body shown before the question and buttons: findings, current state, why the decision is needed, and material trade-offs. Do not enumerate selectable options here.",
+                            "description": "REQUIRED when choices are provided; optional for open-ended questions. Explain findings, current state, why a decision is needed, and material trade-offs before the question and buttons. Do not enumerate selectable options here.",
                         },
                         "choices": {
                             "type": "array",
