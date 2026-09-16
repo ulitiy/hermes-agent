@@ -45,3 +45,18 @@ def test_invoke_tool_passes_clarify_context_to_callback():
     assert result["responses"][0]["context"] == "I found the bug and tests passed."
     assert result["responses"][0]["user_response"] == "Use the fix"
     assert result["outcome"] == "submitted"
+
+
+def test_runtime_rejects_context_free_choices_before_callback():
+    from agent.agent_runtime_helpers import invoke_tool
+
+    calls = []
+    agent = SimpleNamespace(
+        session_id="session-1", _current_turn_id="turn-1", _current_api_request_id="api-1",
+        _memory_manager=None, clarify_callback=lambda questions: calls.append(questions),
+    )
+    result = json.loads(invoke_tool(agent, "clarify", {"questions": [{
+        "question": "Where?", "choices": ["staging", "prod"],
+    }]}, effective_task_id="task-1", tool_call_id="call-1", pre_tool_block_checked=True))
+    assert "context" in result["error"].lower()
+    assert calls == []

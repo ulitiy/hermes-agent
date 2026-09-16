@@ -25,3 +25,21 @@ def test_context_precedes_choices_through_real_registry(multi_select):
     assert answer["status"] == "answered"
     assert result["outcome"] == "submitted"
     assert seen == [(f"{item['context'].strip()}\n\nWhere?", ["staging (Recommended)", "prod"], multi_select)]
+
+
+@pytest.mark.parametrize("context", [None, "", "  ", 17])
+def test_entire_batch_rejected_without_choice_context(context):
+    calls = []
+    result = json.loads(registry.dispatch("clarify", {"questions": [
+        {"question": "Open-ended first?"},
+        {"question": "Where?", "choices": ["staging", "prod"], "context": context},
+    ]}, callback=lambda questions: calls.append(questions)))
+    assert "context" in result["error"].lower()
+    assert calls == []
+
+
+def test_open_ended_needs_no_context():
+    result = json.loads(clarify_tool([{"question": "Why?"}], callback=lambda questions: {
+        "answers": {"q0": "A reason"}, "outcome": "submitted",
+    }))
+    assert result["responses"][0]["user_response"] == "A reason"

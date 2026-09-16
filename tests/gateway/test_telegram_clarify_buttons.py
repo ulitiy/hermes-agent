@@ -94,6 +94,22 @@ class TestTelegramSendClarify:
         # succeeded — old truncation code could raise on edge cases)
 
     @pytest.mark.asyncio
+    async def test_context_precedes_question_and_choices_in_message(self):
+        adapter = _make_adapter()
+        context = "The current implementation verifies answers but takes longer."
+        question = "Which contract should be used?"
+        await adapter.send_clarify(
+            chat_id="12345",
+            question=f"{context}\n\n{question}",
+            choices=["Keep verification", "Prefer speed"],
+            clarify_id="cid-order",
+            session_key="sk-order",
+        )
+        text = adapter._bot.send_message.call_args.kwargs["text"]
+        assert text.index(context) < text.index(question)
+        assert text.index(question) < text.index("1. Keep verification") < text.index("2. Prefer speed")
+
+    @pytest.mark.asyncio
     async def test_html_escapes_question(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()
