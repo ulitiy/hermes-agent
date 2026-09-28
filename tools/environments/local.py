@@ -422,7 +422,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
-    return sanitized
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(sanitized)
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
@@ -544,7 +545,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # happen; single uniform policy across every spawn surface.
     _inject_session_context_env(env)
 
-    return env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
 
 
 def _find_bash() -> str:
@@ -1007,7 +1009,8 @@ def _make_run_env(env: dict) -> dict:
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
-    return run_env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(run_env)
 
 
 def _read_terminal_shell_init_config() -> tuple[list[str], bool]:

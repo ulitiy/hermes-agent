@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
+from agent.delegation_context import is_delegated_child_process_context, owned_kanban_task
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -62,6 +63,15 @@ def _profile_has_kanban_toolset() -> bool:
         return False
 
 
+def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
+    if is_delegated_child_process_context():
+        return tool_error(
+            f"{tool_name} refused: delegate_task child agents are not Kanban "
+            "run owners. Return findings to the parent worker for board mutations."
+        )
+    return None
+
+
 def _check_kanban_mode() -> bool:
     """Task-lifecycle tools are available when:
 
@@ -74,7 +84,9 @@ def _check_kanban_mode() -> bool:
     embedded by default) and orchestrator profiles with the kanban
     toolset enabled see the Kanban lifecycle tool surface.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if is_delegated_child_process_context():
+        return False
+    if owned_kanban_task():
         return True
     return _profile_has_kanban_toolset()
 
@@ -88,7 +100,7 @@ def _check_kanban_orchestrator_mode() -> bool:
     board state. Profiles that explicitly opt into the kanban toolset
     and are NOT scoped to a single task are the orchestrator surface.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if is_delegated_child_process_context() or owned_kanban_task():
         return False
     return _profile_has_kanban_toolset()
 
@@ -97,11 +109,15 @@ def _check_kanban_orchestrator_mode() -> bool:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+setattr(_check_kanban_mode, "context_sensitive", True)
+setattr(_check_kanban_orchestrator_mode, "context_sensitive", True)
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
     if arg:
         return arg
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = owned_kanban_task()
     return env_tid or None
 
 
@@ -250,7 +266,7 @@ def heartbeat_current_worker_from_env() -> bool:
     the worst case is one extra DB write per race, which is harmless.
     """
     global _auto_heartbeat_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = owned_kanban_task()
     if not tid:
         return False
     import time as _time
@@ -503,6 +519,9 @@ def _handle_list(args: dict, **kw) -> str:
 
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
+    delegated_err = _reject_delegated_child_mutation("kanban_complete")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -674,6 +693,9 @@ def _handle_complete(args: dict, **kw) -> str:
 
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
+    delegated_err = _reject_delegated_child_mutation("kanban_block")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -760,6 +782,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     by ``release_stale_claims`` — which is exactly the trap that
     ``heartbeat_claim``'s docstring warns against.
     """
+    delegated_err = _reject_delegated_child_mutation("kanban_heartbeat")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -803,6 +828,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
 
 def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
+    delegated_err = _reject_delegated_child_mutation("kanban_comment")
+    if delegated_err:
+        return delegated_err
     tid = args.get("task_id")
     if not tid:
         return tool_error(
@@ -844,6 +872,9 @@ def _handle_create(args: dict, **kw) -> str:
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
+    delegated_err = _reject_delegated_child_mutation("kanban_create")
+    if delegated_err:
+        return delegated_err
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -1058,6 +1089,9 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task back to ready."""
+    delegated_err = _reject_delegated_child_mutation("kanban_unblock")
+    if delegated_err:
+        return delegated_err
     guard = _require_orchestrator_tool("kanban_unblock")
     if guard:
         return guard
@@ -1086,6 +1120,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
+    delegated_err = _reject_delegated_child_mutation("kanban_link")
+    if delegated_err:
+        return delegated_err
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:

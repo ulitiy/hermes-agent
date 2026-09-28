@@ -229,6 +229,10 @@ def _detect_environment(env: str) -> bool:
     Cached per process. Unknown env names return True (fail-open: never hide a
     skill because of a tag we don't understand).
     """
+    if env == "kanban":
+        from agent.delegation_context import is_delegated_child_process_context
+        if is_delegated_child_process_context():
+            return False
     if env in _ENV_DETECT_CACHE:
         return _ENV_DETECT_CACHE[env]
 

@@ -283,6 +283,9 @@ def decompose_task(
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        escalation = kb.triage_escalation_reason(conn, task_id)
+    if escalation:
+        return DecomposeOutcome(task_id, False, escalation)
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
     if task.status != "triage":
@@ -474,4 +477,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]
+        return [row.id for row in rows if not kb.triage_escalation_reason(conn, row.id)]

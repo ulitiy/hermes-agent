@@ -90,6 +90,8 @@ class CodexAppServerClient:
         spawn_env = hermes_subprocess_env(inherit_credentials=True)
         if env:
             spawn_env.update(env)
+        from agent.delegation_context import delegated_child_subprocess_env
+        spawn_env = delegated_child_subprocess_env(spawn_env)
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 

@@ -154,6 +154,9 @@ def specify_task(
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        escalation = kb.triage_escalation_reason(conn, task_id)
+    if escalation:
+        return SpecifyOutcome(task_id, False, escalation)
     if task is None:
         return SpecifyOutcome(task_id, False, "unknown task id")
     if task.status != "triage":
@@ -270,4 +273,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             include_archived=False,
         )
-    return [t.id for t in tasks]
+        return [t.id for t in tasks if not kb.triage_escalation_reason(conn, t.id)]

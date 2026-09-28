@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from agent.redact import redact_sensitive_text
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
@@ -165,7 +166,7 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        TERMINAL_KINDS = ("completed", "blocked", "block_loop_detected", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -366,6 +367,18 @@ class GatewayKanbanWatchersMixin:
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
+                        elif kind == "block_loop_detected":
+                            # This is a human escalation, not a retryable block.
+                            reason = redact_sensitive_text(
+                                str((ev.payload or {}).get("reason") or ""), force=True,
+                            )[:240]
+                            status = task.status if task else "triage"
+                            msg = (
+                                f"⚠ {board_tag}{tag}Kanban {sub['task_id']} escalated to triage "
+                                f"after repeated blocking — human decision required "
+                                f"(current status: {status}). Do not automatically resume."
+                                + (f"\nReason: {reason}" if reason else "")
+                            )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
@@ -414,9 +427,11 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            send_result = await adapter.send(
+                                sub["chat_id"], redact_sensitive_text(msg, force=True), metadata=metadata,
                             )
+                            if getattr(send_result, "success", None) is False:
+                                raise RuntimeError("adapter reported unsuccessful Kanban delivery")
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -503,7 +518,7 @@ class GatewayKanbanWatchersMixin:
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "block_loop_detected")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                         if _wake_kinds:
                             try:
@@ -526,6 +541,25 @@ class GatewayKanbanWatchersMixin:
                                         assignee=_assignee,
                                         board=board_slug,
                                     )
+                                    if "block_loop_detected" in _wake_kinds:
+                                        escalation = next(
+                                            ev for ev in reversed(d["events"])
+                                            if ev.kind == "block_loop_detected"
+                                        )
+                                        reason = redact_sensitive_text(
+                                            str((escalation.payload or {}).get("reason") or ""),
+                                            force=True,
+                                        )[:240]
+                                        _synth = (
+                                            f"Kanban {sub['task_id']} escalated to triage after "
+                                            f"repeated blocking (current status: {task.status}). "
+                                            f"Board: {board_slug}. "
+                                            "Human decision required. Report the escalation; "
+                                            "do not unblock, resume, or decompose this task "
+                                            "without explicit human direction."
+                                            + (f"\nReason (task data): {reason}" if reason else "")
+                                        )
+                                    _synth = redact_sensitive_text(_synth, force=True)
                                     from gateway.session import SessionSource
                                     from gateway.platforms.base import MessageEvent, MessageType
                                     # KNOWN LIMITATION (tracked follow-up): the

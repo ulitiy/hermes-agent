@@ -1706,6 +1706,13 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Child reads must not initialize/migrate the owner's board. SQLite's
+    # read-only connection also protects writes outside write_txn.
+    from agent.delegation_context import kanban_path_is_fenced
+    if kanban_path_is_fenced(path):
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, the expensive
@@ -2316,6 +2323,15 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
+    from agent.delegation_context import kanban_path_is_fenced, is_delegated_child_process_context
+    if is_delegated_child_process_context():
+        db_path = next((row[2] for row in conn.execute("PRAGMA database_list")
+                        if row[1] == "main"), "")
+        if kanban_path_is_fenced(db_path):
+            raise PermissionError(
+                "delegate_task child agents cannot mutate the owner's Kanban board; "
+                "return findings to the parent worker."
+            )
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
@@ -5114,6 +5130,28 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def triage_escalation_reason(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the human park reason, not an instruction to auto-promote.
+
+    Adapted from yoyodine-industries' upstream PR #125207: newest routing event wins;
+    comments/heartbeats must not erase the breaker. Call inside the promotion
+    transaction as well as before spending an auxiliary call.
+    """
+    row = conn.execute(
+        "SELECT e.id, e.kind FROM task_events e JOIN tasks t ON t.id = e.task_id "
+        "WHERE t.id = ? AND t.status = 'triage' "
+        "AND e.kind IN ('blocked', 'dependency_wait', 'block_loop_detected', 'gave_up') "
+        "ORDER BY e.id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    if row is None or row["kind"] != "block_loop_detected":
+        return None
+    return (
+        f"{task_id}: block_loop_detected (event {row['id']}); triage requires a human "
+        "decision. Do not auto-decompose or resume. A human may archive the card "
+        "or explicitly move it out of triage after resolving the blocker."
+    )
+
+
 def specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5148,6 +5186,8 @@ def specify_triage_task(
             (task_id,),
         ).fetchone()
         if existing is None:
+            return False
+        if triage_escalation_reason(conn, task_id):
             return False
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
@@ -5305,6 +5345,8 @@ def decompose_triage_task(
         if root_row is None:
             return None
         if root_row["status"] != "triage":
+            return None
+        if triage_escalation_reason(conn, task_id):
             return None
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
