@@ -211,6 +211,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
         runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
                                  _get_system_prompt_for_channel=lambda *a, **k: "",
+                                 _load_source_profile=lambda _source: None,
                                  _ephemeral_system_prompt="")
         ctx = TurnContext(source=SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm"),
                           session_key="slack:C1", user_config={}, message="Hi")

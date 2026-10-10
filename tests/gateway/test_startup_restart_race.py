@@ -398,5 +398,3 @@ async def test_shutdown_clears_pending_clarify_before_drain(tmp_path, monkeypatc
 
     runner._drain_active_agents.assert_awaited_once()
     assert not clarify_gateway.has_pending("session-with-clarify")
-
-

@@ -30,9 +30,12 @@ def _adapter_module():
 
 
 @pytest.mark.asyncio
-async def test_outbound_bot_api_calls_are_paced_per_chat(monkeypatch):
+@pytest.mark.parametrize("interval", [0.5, 2.0])
+async def test_outbound_bot_api_calls_are_paced_per_chat(monkeypatch, interval):
+    from plugins.platforms.telegram.adapter import _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS
+
     adapter_mod = _adapter_module()
-    adapter = _adapter(0.5)
+    adapter = _adapter(interval)
     msg1 = MagicMock(message_id=101)
     msg2 = MagicMock(message_id=102)
     adapter._bot.send_message = AsyncMock(side_effect=[msg1, msg2])
@@ -54,7 +57,9 @@ async def test_outbound_bot_api_calls_are_paced_per_chat(monkeypatch):
     await adapter.send("12345", "second", metadata={"notify": True})
 
     assert adapter._bot.send_message.await_count == 2
-    assert sleeps == [pytest.approx(0.5)]
+    # The current upstream chat budget is a floor, not something the local
+    # API-wide option may relax. A stricter local interval still takes effect.
+    assert sum(sleeps) == pytest.approx(max(interval, _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS))
 
 
 @pytest.mark.asyncio

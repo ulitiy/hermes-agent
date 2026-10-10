@@ -151,6 +151,7 @@ class _FakeSource:
     user_name = "user"
     chat_type = "dm"
     profile = None
+    behavior_profile = None
 
 
 class _FakeEvent:

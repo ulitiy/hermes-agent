@@ -18,6 +18,7 @@ this is deliberately a *behaviour* overlay (Option B), not a HERMES_HOME swap.
 import asyncio
 import sys
 import types
+import weakref
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -219,7 +220,7 @@ class TestLoadSourceProfile:
 
         assert source.profile is None
         assert source.behavior_profile == "engineer"
-        assert runner._adapter_for_source(source) is default_adapter
+        assert runner._delivery_adapter_for(source) is default_adapter
 
     def test_multiplex_source_skips_default_topic_behavior_overlay(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -238,16 +239,18 @@ class TestLoadSourceProfile:
         runner._profile_adapters = {
             "coder": {Platform.TELEGRAM: coder_adapter},
         }
+        runner.config = types.SimpleNamespace(multiplex_profiles=True)
         runner._startup_restore_in_progress = True
         runner._queue_startup_restore_event = MagicMock()
 
         source = _make_event_source(thread_id="2")
         source.profile = "coder"
+        source._transport_adapter_ref = weakref.ref(coder_adapter)
         event = MessageEvent(text="ping", source=source)
         asyncio.run(runner._handle_message(event))
 
         assert source.behavior_profile is None
-        assert runner._adapter_for_source(source) is coder_adapter
+        assert runner._delivery_adapter_for(source) is coder_adapter
 
     def test_behavior_profile_roundtrips_without_transport_ownership(self):
         source = _make_event_source(thread_id="2")

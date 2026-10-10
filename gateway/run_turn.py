@@ -2199,7 +2199,7 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         mark_progress = getattr(adapter, "mark_session_gateway_handler_entered", None)
         if callable(mark_progress):
             mark_progress(_quick_key)

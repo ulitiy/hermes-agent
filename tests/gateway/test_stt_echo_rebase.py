@@ -23,7 +23,7 @@ async def test_echo_opt_in_survives_real_loader_and_pending_dedup(tmp_path, monk
     adapter = SimpleNamespace(send=AsyncMock(return_value=SendResult(success=True)))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", thread_id="7")
     event = MessageEvent(source=source, text="", message_type=MessageType.VOICE, media_urls=["note.ogg"])
-    runner._adapter_for_source = lambda _: adapter
+    runner._delivery_adapter_for = lambda _: adapter
     runner._thread_metadata_for_source = lambda *args: {"thread_id": "7"}
     runner._reply_anchor_for_event = lambda _: None
     runner._enrich_message_with_transcription = AsyncMock(return_value=('"hello"', ["hello"]))

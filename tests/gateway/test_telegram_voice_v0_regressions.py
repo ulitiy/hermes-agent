@@ -29,6 +29,7 @@ def _runner(adapter=None):
     runner = object.__new__(GatewayRunner)
     runner.config = SimpleNamespace(
         stt_enabled=True,
+        stt_send_transcription=True,
         group_sessions_per_user=True,
         thread_sessions_per_user=False,
     )
@@ -124,7 +125,7 @@ def _run_agent_runner(adapter):
 
 @pytest.mark.asyncio
 async def test_pending_voice_interrupt_reuses_transcript_and_echo():
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), config=PlatformConfig(enabled=True))
     runner = _runner(adapter)
     source = _source()
     event = MessageEvent(
@@ -167,7 +168,7 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
     adapter.send.assert_awaited_once_with(
         "12345",
-        '🎙️ "hello once"',
+        '> 🎙 hello once',
         metadata=None,
     )
 
@@ -218,7 +219,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
-    assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
+    assert adapter.sent == [("12345", '> 🎙 hello once', None)]
 
 
 @pytest.mark.asyncio

@@ -243,4 +243,3 @@ def is_partial_reaction_only_marker(text: Any) -> bool:
 def is_partial_gateway_control_marker(text: Any) -> bool:
     """Streaming hold-back predicate for all gateway control markers."""
     return is_partial_silence_marker(text) or is_partial_reaction_only_marker(text)
-

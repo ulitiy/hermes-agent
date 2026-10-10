@@ -151,7 +151,10 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
     result = await runner._run_agent(message="first", context_prompt="", history=[], source=_source(),
         session_id="queue-policy", session_key=SESSION_KEY,
         persist_user_display_metadata=None if diagnostic_last else {"notification_category": "diagnostic"})
-    assert _TwoTurnAgent.calls == ["first", "follow-up"]
+    assert len(_TwoTurnAgent.calls) == 2
+    assert _TwoTurnAgent.calls[0] == "first"
+    assert _TwoTurnAgent.calls[1].startswith("[Telegram message id: `queued`")
+    assert _TwoTurnAgent.calls[1].split("\n\n", 1)[1] == "follow-up"
     assert result["final_response"] == "done-2"
     assert result["_notification_reply_muted"] is diagnostic_last
     from gateway.warning_notifications import diagnostic_wake_muted
@@ -192,7 +195,10 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
 
     # The follow-up really did run in-band.
     assert result["final_response"] == "done-2"
-    assert _TwoTurnAgent.calls == ["the first turn", "the follow-up"]
+    assert len(_TwoTurnAgent.calls) == 2
+    assert _TwoTurnAgent.calls[0] == "the first turn"
+    assert _TwoTurnAgent.calls[1].startswith("[Telegram message id: `queued-1`")
+    assert _TwoTurnAgent.calls[1].split("\n\n", 1)[1] == "the follow-up"
 
     # ...and it was acknowledged through the lifecycle hooks.
     assert adapter.started == ["queued-1"]

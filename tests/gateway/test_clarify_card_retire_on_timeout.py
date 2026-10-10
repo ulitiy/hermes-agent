@@ -161,9 +161,14 @@ class _UndeliverableAdapter(_CardAdapter):
 def test_clarify_tool_batch_route_answers_and_stops_together(adapter_cls, outcome, notice):
     """End to end: the tool sees unanswered questions + the outcome + the surface's notice."""
     adapter = adapter_cls()
+    questions = [dict(q, context="A is faster; B adds review. Choose before proceeding.")
+                 for q in _THREE_QUESTIONS[:2]]
     raw, _labels = _run_clarify(
-        adapter, questions=_THREE_QUESTIONS[:2], via_tool=True)
-    assert _asked(adapter) == ["One?"]
+        adapter, questions=questions, via_tool=True)
+    assert len(adapter.asked) == 1
+    assert adapter.asked[0].startswith(questions[0]["context"])
+    assert "One?" in adapter.asked[0]
+    assert "Two?" not in adapter.asked[0]
     result = json.loads(raw)
     assert result["outcome"] == outcome
     assert result["notice"] == notice

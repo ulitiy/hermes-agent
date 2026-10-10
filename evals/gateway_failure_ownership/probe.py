@@ -304,7 +304,9 @@ async def main():
         if fault == "foreign-writer":
             expected.append(("foreign independent input", None))
         if accepted:
-            expected.append((text, pid))
+            # The local Telegram metadata prefix is part of the prepared user
+            # turn; retain exact ordered equality and ownership/count checks.
+            expected.append((runner._prepend_inbound_reply_context(event, source, text), pid))
         actual = [
             (r["content"], r["platform_message_id"])
             for r in rows()

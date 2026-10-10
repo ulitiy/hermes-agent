@@ -87,6 +87,9 @@ class TestTurnRunner:
         gateway_runner._pending_skills_reload_notes = {}
         gateway_runner.session_store._entries = {}
         gateway_runner._get_system_prompt_for_channel.return_value = None
+        gateway_runner._load_source_profile.return_value = None
+        gateway_runner._parse_turn_reasoning_prefix.side_effect = lambda text: (None, text)
+        gateway_runner._apply_turn_reasoning_override.side_effect = lambda config, _mode: config
         gateway_runner._resolve_session_agent_runtime.return_value = ("test-model", {})
         gateway_runner._resolve_session_reasoning_config.return_value = None
         gateway_runner._resolve_session_service_tier.return_value = None
