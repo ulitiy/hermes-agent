@@ -167,6 +167,8 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
                 if not _owned():
                     break
 
+    if stop_event.is_set():
+        return
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)
 

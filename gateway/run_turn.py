@@ -247,13 +247,8 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
-        if unavailable_override and not self._pre_agent_fallback_notice:
-            from hermes_cli.fallback_config import pre_agent_fallback_notice
-            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
-                unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
-
         profile_name = self._load_source_profile(source) if source is not None else None
-        if profile_name:
+        if profile_name and not override:  # Never replace a recovered session provider's credentials.
             profile_model, profile_runtime = self._load_profile_model_runtime_config(profile_name)
             if profile_model:
                 model = profile_model
@@ -261,7 +256,7 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
                 runtime_kwargs = profile_runtime
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None:
+        if cfg and source is not None and not override:
             ch = _get_channel_override(
                 cfg, source.platform, str(source.chat_id) if source.chat_id else "",
                 thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
@@ -276,6 +271,11 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
+
+        if unavailable_override and not self._pre_agent_fallback_notice:
+            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

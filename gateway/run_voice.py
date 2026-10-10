@@ -421,6 +421,14 @@ class GatewayVoiceMixin:
             transcript = quote.removeprefix("> 🎙 ").strip()
             if not transcript or transcript not in inbound_text:
                 break
+            # The echo producer preserves embedded newlines. Match the complete
+            # prefix, not unrelated answer lines that merely follow the quote.
+            while sep and rest:
+                line, next_sep, next_rest = rest.partition("\n")
+                extended = transcript + "\n" + line.removeprefix("> ")
+                if extended not in inbound_text:
+                    break
+                transcript, sep, rest = extended, next_sep, next_rest
             text = rest.lstrip() if sep else ""
         return text
 

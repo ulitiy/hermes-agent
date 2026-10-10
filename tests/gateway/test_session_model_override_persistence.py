@@ -183,7 +183,8 @@ def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_fa
 
 
 @pytest.mark.parametrize("codex_on_turn", ["recovers", "still_unavailable"])
-def test_codex_override_never_runs_on_the_default_providers_endpoint(store_factory, codex_on_turn):
+@pytest.mark.parametrize("topic", [False, True])
+def test_codex_override_never_runs_on_the_default_providers_endpoint(store_factory, codex_on_turn, topic, monkeypatch):
     """A persisted openai-codex override whose credentials fail to re-resolve used to be layered over the
     DEFAULT provider's runtime (Nous URL + Nous key + chat_completions). The turn runs on ONE coherent
     route: the override's own provider when it resolves, else the whole default route with a notice."""
@@ -196,6 +197,12 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
              "base_url": "https://chatgpt.com/backend-api/codex"}
     nous = {"provider": "nous", "api_key": "nous-key", "api_mode": "chat_completions",
             "base_url": "https://inference-api.nousresearch.com/v1"}
+    topic_runtime = {"provider": "custom", "api_key": "topic-key", "api_mode": "chat_completions",
+                     "base_url": "https://topic.invalid/v1"}
+    source = _make_source() if topic else None
+    if topic:
+        monkeypatch.setattr(runner, "_load_source_profile", lambda _: "fixture-topic")
+        monkeypatch.setattr(runner, "_load_profile_model_runtime_config", lambda _: ("topic-model", dict(topic_runtime)))
     calls = iter([RuntimeError("refresh blip"), codex if codex_on_turn == "recovers" else RuntimeError("gone")])
 
     def _for_provider(provider, target_model=None):
@@ -208,9 +215,12 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
     with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=_for_provider), \
          patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(nous)):
         model, runtime = runner._resolve_session_agent_runtime(
-            session_key=session_key, user_config={"model": {"default": "openai/gpt-6-luna", "provider": "nous"}})
+            source=source, session_key=session_key,
+            user_config={"model": {"default": "openai/gpt-6-luna", "provider": "nous"}})
 
     expected_model, expected = ("gpt-6-luna-900k", codex) if codex_on_turn == "recovers" else ("openai/gpt-6-luna", nous)
+    if topic and codex_on_turn == "still_unavailable":
+        expected_model, expected = "topic-model", topic_runtime
     assert (model, {k: runtime[k] for k in expected}) == (expected_model, expected)
     assert bool(runner._pre_agent_fallback_notice) is (codex_on_turn == "still_unavailable")
 
