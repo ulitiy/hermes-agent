@@ -147,16 +147,31 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     scheduler provider here (no live adapters; delivery falls back to the
     per-platform send path).
 
-    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
+    The gateway must own dispatch while it is alive on this HERMES_HOME: it
+    has live adapters and may have OS permissions the Desktop process lacks.
+    The tick lock alone prevents duplicates, not the wrong process winning.
+    The built-in provider re-checks ownership every tick, resuming when the
+    gateway stops and standing down if it returns. External providers only
+    defer their initial start; their lifecycle has no dynamic takeover gate.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from gateway.status import is_gateway_running
 
     provider = resolve_cron_scheduler()
+    start_kwargs: dict = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        # Also checked inside tick's lock, before any due jobs are claimed.
+        start_kwargs["can_dispatch"] = lambda: not is_gateway_running(cleanup_stale=False)
+    else:
+        # External providers own their scheduling lifecycle and do not accept
+        # can_dispatch. Defer their start, without restarting/re-registering them.
+        while is_gateway_running(cleanup_stale=False):
+            if stop_event.wait(interval):
+                return
+    if stop_event.is_set():
+        return
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:

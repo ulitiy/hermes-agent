@@ -16,9 +16,199 @@ is set. We patch `cron.scheduler.tick` (both tickers import it locally as
 `cron_tick`, so the module-attribute patch is observed) and assert the loop
 drives it and stops promptly.
 """
+import os
+import subprocess
+import sys
 import threading
 import time
+from contextlib import contextmanager
 from unittest.mock import patch
+
+import pytest
+
+
+@contextmanager
+def _gateway_owner(home):
+    """Real PID/lock owner in a temp home, without starting any gateway services."""
+    from gateway.status import get_running_pid
+
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; from gateway.status import acquire_gateway_runtime_lock, write_pid_file; "
+         "assert acquire_gateway_runtime_lock(); write_pid_file(); sys.stdin.read()",
+         "hermes", "gateway", "run"],
+        env={**os.environ, "HERMES_HOME": str(home)},
+        stdin=subprocess.PIPE,
+    )
+    try:
+        assert _wait_until(
+            lambda: get_running_pid(home / "gateway.pid", cleanup_stale=False) == child.pid
+        ), "test gateway owner did not become live"
+        assert child.stdin is not None
+        yield child
+    finally:
+        # EOF stops only our test child; deliberately leave stale metadata behind.
+        if child.stdin is not None:
+            child.stdin.close()
+        try:
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+
+def _desktop_tick_once(monkeypatch):
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    stop = threading.Event()
+
+    def finish_cycle(timeout):
+        stop.set()
+        return True
+
+    monkeypatch.setattr(stop, "wait", finish_cycle)
+    _start_desktop_cron_ticker(stop)
+
+
+def test_desktop_ticker_defers_to_live_gateway(tmp_path, monkeypatch):
+    """A real same-home gateway PID/lock must keep Desktop out of tick()."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with _gateway_owner(tmp_path), patch("cron.scheduler.tick") as tick:
+        _desktop_tick_once(monkeypatch)
+        tick.assert_not_called()
+
+
+def test_desktop_ticker_tracks_gateway_start_stop(tmp_path, monkeypatch):
+    """Re-check real ownership each cycle; a dead owner's stale files don't block."""
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    stop = threading.Event()
+    with patch("cron.scheduler.tick") as tick:
+        def ownership_cycles():
+            with _gateway_owner(tmp_path):
+                yield
+                tick.assert_not_called()
+            yield
+            assert tick.call_count == 1
+            # The next test owner takes the place of the dead one, like gateway startup.
+            (tmp_path / "gateway.pid").unlink()
+            with _gateway_owner(tmp_path):
+                yield
+                assert tick.call_count == 1
+            yield
+            assert tick.call_count == 2
+            stop.set()
+
+        cycles = ownership_cycles()
+        next(cycles)
+
+        def next_cycle(timeout):
+            next(cycles, None)
+            return stop.is_set()
+
+        monkeypatch.setattr(stop, "wait", next_cycle)
+        try:
+            _start_desktop_cron_ticker(stop)
+        finally:
+            cycles.close()
+        assert stop.is_set()
+
+
+def test_desktop_ticker_ignores_other_home_gateway(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "desktop"))
+    with _gateway_owner(tmp_path / "other"), patch("cron.scheduler.tick") as tick:
+        _desktop_tick_once(monkeypatch)
+        tick.assert_called_once()
+
+
+@pytest.mark.parametrize("record", ["not json", str(os.getpid())])
+def test_desktop_ticker_ignores_invalid_gateway_metadata(tmp_path, monkeypatch, record):
+    """Stale/malformed PID files are not ownership; the probe must not delete them."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    pid_path = tmp_path / "gateway.pid"
+    pid_path.write_text(record)
+    with patch("cron.scheduler.tick") as tick:
+        _desktop_tick_once(monkeypatch)
+        tick.assert_called_once()
+    assert pid_path.read_text() == record
+
+
+def test_desktop_gate_rechecks_gateway_before_claim(tmp_path, monkeypatch):
+    """A gateway appearing after the outer probe leaves a real due job untouched."""
+    from datetime import datetime, timedelta, timezone
+    from cron import jobs, scheduler
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real_tick = scheduler.tick
+
+    def gateway_starts_before_tick(**kwargs):
+        with _gateway_owner(tmp_path):
+            return real_tick(**kwargs)
+
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job(prompt="test", schedule="every 5m")
+        job["next_run_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        jobs.save_jobs([job])
+        assert [j["id"] for j in jobs.get_due_jobs()] == [job["id"]]
+        store = tmp_path / "cron" / "jobs.json"
+        before = store.read_bytes()
+        with patch.object(scheduler, "tick", side_effect=gateway_starts_before_tick) as tick, \
+             patch.object(scheduler, "run_one_job") as run:
+            _desktop_tick_once(monkeypatch)
+            tick.assert_called_once()
+            run.assert_not_called()
+        assert store.read_bytes() == before
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_desktop_external_provider_waits_for_gateway(tmp_path, monkeypatch, shutdown):
+    """External providers defer startup, without receiving built-in-only kwargs."""
+    from cron import scheduler_provider as sp
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    starts = []
+    waits = []
+    stop = threading.Event()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class External(sp.CronScheduler):
+        @property
+        def name(self):
+            return "external"
+
+        def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+            starts.append((stop_event, adapters, loop, interval))
+
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", External)
+    with _gateway_owner(tmp_path) as child:
+        def wait_for_owner(timeout):
+            waits.append(timeout)
+            assert starts == []
+            if shutdown:
+                stop.set()
+            else:
+                assert child.stdin is not None
+                child.stdin.close()
+                child.wait(timeout=5)
+            return stop.is_set()
+
+        monkeypatch.setattr(stop, "wait", wait_for_owner)
+        _start_desktop_cron_ticker(stop, interval=17)
+
+    assert waits == [17]
+    assert starts == ([] if shutdown else [(stop, None, None, 17)])
+
+
+def test_desktop_external_provider_does_not_start_after_shutdown():
+    from hermes_cli.web_server import _start_desktop_cron_ticker
+
+    stop = threading.Event()
+    stop.set()
+    with patch("cron.scheduler_provider.resolve_cron_scheduler") as resolve:
+        _start_desktop_cron_ticker(stop)
+        resolve.return_value.start.assert_not_called()
 
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
