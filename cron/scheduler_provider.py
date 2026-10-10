@@ -619,9 +619,17 @@ class InProcessCronScheduler(CronScheduler):
                     for _pname, home in cycle_homes:
                         try:
                             with _profile_cron_scope(home):
+                                # Enumeration is not admission: a gateway can return before
+                                # tick acquires its lock. Recheck this profile there as well.
+                                tick_gate = can_dispatch
+                                if profile_gate is not None:
+                                    tick_gate = lambda name=_pname, path=home: (
+                                        (can_dispatch is None or can_dispatch())
+                                        and profile_gate(name, path)
+                                    )
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
-                                    sync=False, can_dispatch=can_dispatch,
+                                    sync=False, can_dispatch=tick_gate,
                                 )
                         except CronTickYielded as e:
                             # Yield for THIS profile only; one fresh gateway must not stop others.
