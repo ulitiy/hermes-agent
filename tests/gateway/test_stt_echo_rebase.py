@@ -40,6 +40,18 @@ async def test_echo_opt_in_survives_real_loader_and_pending_dedup(tmp_path, monk
         adapter.send.assert_awaited_once_with("123", "Audit: > 🎙 hello", metadata={"thread_id": "7"})
 
 
+@pytest.mark.parametrize("quoted_tail", ["second line", "> second line"])
+def test_multiline_echo_removed_only_after_successful_echo(quoted_tail):
+    runner = GatewayRunner.__new__(GatewayRunner)
+    inbound = "first line\nsecond line"
+    response = f"> 🎙 first line\n{quoted_tail}\n\nAnswer"
+    assert runner._strip_leading_voice_transcript_from_response(response, inbound) == response
+    inbound = runner._append_voice_transcript_no_echo_instruction(inbound)
+    assert runner._strip_leading_voice_transcript_from_response(response, inbound) == "Answer"
+    unrelated = "> 🎙 unrelated\nquote\n\nAnswer"
+    assert runner._strip_leading_voice_transcript_from_response(unrelated, inbound) == unrelated
+
+
 def test_aliases_preserve_explicit_false_and_header():
     config = GatewayConfig.from_dict({"stt": {"echo_transcripts": True}})
     assert config.stt_send_transcription is True

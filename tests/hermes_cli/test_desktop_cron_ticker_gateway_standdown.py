@@ -99,6 +99,32 @@ def test_ticker_starts_when_no_gateway(ticker_env, gateway):
     assert "kwargs" in started  # provider started as before
 
 
+def test_cancelled_external_provider_does_not_start(ticker_env, gateway):
+    from hermes_cli import web_server
+
+    _home, started = ticker_env
+    gateway["running"] = False
+    stop = threading.Event()
+    stop.set()
+    web_server._start_desktop_cron_ticker(stop, interval=0)
+    assert started == {}
+
+
+def test_cancel_during_final_ownership_probe_does_not_start(ticker_env, monkeypatch):
+    from hermes_cli import web_server
+
+    _home, started = ticker_env
+    stop = threading.Event()
+
+    def gone(*_args):
+        stop.set()
+        return False
+
+    monkeypatch.setattr(web_server, "_gateway_owns_cron", gone)
+    web_server._start_desktop_cron_ticker(stop, interval=0)
+    assert started == {}
+
+
 def test_ticker_fails_open_when_ownership_probe_raises(ticker_env, monkeypatch, caplog):
     from hermes_cli import web_server
 
