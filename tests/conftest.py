@@ -20,8 +20,11 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,15 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# Sandbox before collection imports modules with cached storage/log paths.
+# Per-test fixtures run too late for cron.jobs.JOBS_FILE (and similar constants).
+# Backported pattern from upstream ef1b06d8536e; always replace an inherited
+# HERMES_HOME as well, since gateway-launched pytest inherits the live profile.
+_SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────

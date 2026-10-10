@@ -38,32 +38,22 @@ def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
     profile_home = root / "profiles" / "coder"
     profile_home.mkdir(parents=True)
 
-    _set_profile_env(monkeypatch, root, profile_home)
-
     import hermes_constants
-
-    # Sanity: the override is wired the way the gateway sees it.
-    assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
-    assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
-
-    # cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
-    # fresh import under this env anchors the store at <profile>/cron.
     import cron.jobs as jobs
 
-    importlib.reload(jobs)
     try:
-        assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
-        assert (
-            jobs.JOBS_FILE.resolve()
-            == (profile_home / "cron" / "jobs.json").resolve()
-        )
-        # The shared-root path must NOT be the store — that would re-break
-        # per-profile isolation (#4707).
-        assert (
-            jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
-        )
+        with monkeypatch.context() as profile_patch:
+            _set_profile_env(profile_patch, root, profile_home)
+            assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
+            assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
+
+            # Exercise real import-time anchoring under the controlled profile.
+            importlib.reload(jobs)
+            assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
+            assert jobs.JOBS_FILE.resolve() == (profile_home / "cron" / "jobs.json").resolve()
+            assert jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
     finally:
-        monkeypatch.undo()
+        # Restore only this test's overrides, never the autouse home sandbox.
         importlib.reload(jobs)
 
 
@@ -108,19 +98,13 @@ def test_cron_storage_unaffected_when_no_profile(tmp_path, monkeypatch):
     root = tmp_path / "hermes_home"
     root.mkdir(parents=True)
 
-    import hermes_constants
-
-    monkeypatch.setattr(
-        hermes_constants, "_get_platform_default_hermes_home", lambda: root
-    )
-    monkeypatch.setenv("HERMES_HOME", str(root))
-
     import cron.jobs as jobs
 
-    importlib.reload(jobs)
     try:
-        assert jobs.HERMES_DIR.resolve() == root.resolve()
-        assert jobs.JOBS_FILE.resolve() == (root / "cron" / "jobs.json").resolve()
+        with monkeypatch.context() as profile_patch:
+            _set_profile_env(profile_patch, root, root)
+            importlib.reload(jobs)
+            assert jobs.HERMES_DIR.resolve() == root.resolve()
+            assert jobs.JOBS_FILE.resolve() == (root / "cron" / "jobs.json").resolve()
     finally:
-        monkeypatch.undo()
         importlib.reload(jobs)
