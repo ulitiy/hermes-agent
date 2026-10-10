@@ -37,8 +37,9 @@ dependencies = [
   # extra and gets prepared through PM when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
-  "openai==2.24.0; python_version >= '3.14'",
-  "certifi==2026.5.20; python_version >= '3.14'",
+  # Preserve the reviewed migration runtime pins while PM owns the environment.
+  "openai==2.42.0; python_version >= '3.14'",
+  "certifi==2026.6.17; python_version >= '3.14'",
   # TLS trust comes from the OS certificate store (agent/ssl_verify.py), so
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on
@@ -49,12 +50,12 @@ dependencies = [
   "python-dotenv==1.2.2; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
-  "rich==14.3.3; python_version >= '3.14'",
+  "rich==15.0.0; python_version >= '3.14'",
   "tenacity==9.1.4; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
-  "requests==2.33.0; python_version >= '3.14'",  # CVE-2026-25645
+  "requests==2.34.2; python_version >= '3.14'",  # Includes CVE-2026-25645 fix.
   "jinja2==3.1.6; python_version >= '3.14'",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
   # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.
@@ -80,7 +81,7 @@ dependencies = [
   "snowballstemmer==3.1.1; python_version >= '3.14'",
   # Requirement and version checks must work in lean installs without
   # relying on another package to bring packaging in transitively.
-  "packaging==26.0; python_version >= '3.14'",
+  "packaging==26.2; python_version >= '3.14'",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both
@@ -424,7 +425,9 @@ a2a = ["a2a-sdk[http-server]==1.1.0", "uvicorn[standard]==0.41.0"]
 # pm (stt.mistral / tts.mistral) at first use — deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
-mistral = ["mistralai==2.4.8"]
+# Removes the OTel semantic-conventions cap incompatible with Hindsight.
+# PM extras resolve this declaration directly; there is no duplicate lazy-deps pin.
+mistral = ["mistralai==2.10.1"]
 # OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
 # OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
 # PM on first use; never a core dependency and deliberately
