@@ -52,9 +52,12 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
+    from hermes_cli.kanban_triage_policy import requires_human_decision
+    if ev.kind == "block_loop_detected":
+        return not requires_human_decision((ev.payload or {}).get("kind"))
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
         return True
-    if ev.kind in {"blocked", "block_loop_detected"}:
+    if ev.kind == "blocked":
         return (ev.payload or {}).get("kind") != "needs_input"
     return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
@@ -378,14 +381,17 @@ def _payload(ev: Any, key: str) -> Any:
 def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
     value, or ``""`` when absent."""
+    from agent.redact import redact_sensitive_text
     value = _payload(ev, key)
-    return t(msg_key, value=str(value)[:limit]) if value else ""
+    return t(msg_key, value=redact_sensitive_text(str(value), force=True)[:limit]) if value else ""
 
 
 _NL = "\n{}"
 
 
 def _first_line(text: str, limit: int) -> str:
+    from agent.redact import redact_sensitive_text
+    text = redact_sensitive_text(text, force=True)
     lines = text.strip().splitlines()
     return lines[0][:limit] if lines else text[:limit]
 
@@ -409,7 +415,8 @@ def _fmt_review_requested(ev, n) -> tuple:
     wake_handoff = None
     summary = _payload(ev, "summary")
     if summary:
-        summary = str(summary)
+        from agent.redact import redact_sensitive_text
+        summary = redact_sensitive_text(str(summary), force=True)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
@@ -432,15 +439,12 @@ def _fmt_changes_requested(ev, n) -> tuple:
 def _fmt_block_loop_detected(ev, n) -> tuple:
     """Re-blocked for the same cause past the limit and routed to `triage`.
 
-    It emits no blocked/status event, so ping loudly here. A repeated-block
-    circuit breaker establishes that orchestration attention is needed; it
-    does NOT establish that a human decision or owner input exists. Use
-    neutral orchestration wording unless the block was typed as a genuine
-    owner-input request (`needs_input`, the only kind that carries a concrete
-    question for the owner).
+    It emits no blocked/status event, so ping here. Explicit technical kinds
+    remain automatic; needs_input and legacy untyped escalations stay human-held.
     """
     kind = _payload(ev, "kind")
-    decision = kind == "needs_input"
+    from hermes_cli.kanban_triage_policy import requires_human_decision
+    decision = requires_human_decision(kind)
     msg = t(
         "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
@@ -498,6 +502,7 @@ class _KanbanNotification:
     """
 
     def __init__(self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict) -> None:
+        from agent.redact import redact_sensitive_text
         self.runner = runner
         self.d = d
         self.platform_cls = platform_cls
@@ -508,7 +513,7 @@ class _KanbanNotification:
         self.platform_str = (sub["platform"] or "").lower()
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
-        self.title = (task.title if task else sub["task_id"])[:120]
+        self.title = redact_sensitive_text(task.title if task else sub["task_id"], force=True)[:120]
         self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
         tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""
@@ -574,6 +579,8 @@ class _KanbanNotification:
 
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
+        from agent.redact import redact_sensitive_text
+        from hermes_cli.kanban_triage_policy import requires_human_decision
         task, sub = self.task, self.sub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
@@ -600,7 +607,17 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
-        self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
+        for ev in self.d["events"]:
+            if ev.kind != "block_loop_detected":
+                continue
+            synth += "\n" + t("gateway.kanban.wake.escalation_detail",
+                              status=task.status if task else "unknown",
+                              reason=_safe_review_reason(_payload(ev, "reason"), 500))
+            if requires_human_decision(_payload(ev, "kind")):
+                synth += "\n" + t("gateway.kanban.wake.human_hold")
+        self.synth = redact_sensitive_text(
+            synth + "\n\n" + t("gateway.kanban.wake.guidance"), force=True,
+        )
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
@@ -675,7 +692,9 @@ class _KanbanNotification:
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        from agent.redact import redact_sensitive_text
         from gateway.warning_notifications import present_notification
+        msg = redact_sensitive_text(msg, force=True)
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}

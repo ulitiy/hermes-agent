@@ -125,8 +125,12 @@ def _profile_author(default: str = "specifier") -> str:
 
 def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:
     """``(task, "")`` when the task exists and is in triage, else ``(None, reason)``."""
+    from hermes_cli.kanban_triage_policy import triage_escalation_reason
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        escalation = triage_escalation_reason(conn, task_id)
+    if escalation:
+        return None, escalation
     if task is None:
         return None, "unknown task id"
     if task.status != "triage":
@@ -236,6 +240,7 @@ def specify_task(
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Task ids in the triage column; ``tenant`` narrows the sweep."""
+    from hermes_cli.kanban_triage_policy import triage_escalation_reason
     with kbc.connect_closing() as conn:
         tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
-    return [t.id for t in tasks]
+        return [t.id for t in tasks if not triage_escalation_reason(conn, t.id)]

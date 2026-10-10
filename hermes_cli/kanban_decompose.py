@@ -338,6 +338,7 @@ def decompose_task(
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column."""
+    from hermes_cli.kanban_triage_policy import triage_escalation_reason
     with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        rows = kb.list_tasks(conn, status="triage", tenant=tenant)
+        return [row.id for row in rows if not triage_escalation_reason(conn, row.id)][:1000]

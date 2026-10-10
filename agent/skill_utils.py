@@ -117,6 +117,9 @@ def _detect_kanban() -> bool:
     # Mirror tools/kanban_tools.py: a dispatcher-spawned worker (env vars, but
     # only when this execution OWNS the task — delegate children / in-process
     # cron see the worker's vars) or a profile opted into the kanban toolset.
+    from tools.kanban_tools import _delegation_ctx
+    if _delegation_ctx("is_delegated_child_process_context", True):
+        return False
     if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
         try:
             from agent.delegation_context import is_dispatcher_owned_worker_context

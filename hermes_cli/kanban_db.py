@@ -3756,9 +3756,9 @@ def specify_triage_task(
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
-    txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
-    gating still applies; the audit comment is written only when a field changed.
+    txn; False when not in eligible triage. Parent gating and changed-field audit still apply.
     """
+    from hermes_cli.kanban_triage_policy import triage_escalation_reason
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
@@ -3767,7 +3767,7 @@ def specify_triage_task(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
-        if existing is None:
+        if existing is None or triage_escalation_reason(conn, task_id):
             return False
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
