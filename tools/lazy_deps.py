@@ -122,13 +122,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
     # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
     # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
-    # STT + TTS share the same SDK.
-    "tts.mistral": ("mistralai==2.4.8",),
+    # STT + TTS share the same SDK. 2.10.1 drops the OTel semconv cap
+    # incompatible with Hindsight; keep the existing httpx-based 2.x API.
+    "tts.mistral": ("mistralai==2.10.1",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
-    "stt.mistral": ("mistralai==2.4.8",),
+    "stt.mistral": ("mistralai==2.10.1",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
