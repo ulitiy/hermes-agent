@@ -42,16 +42,18 @@ dependencies = [
   # extra and gets lazy-installed via `tools/lazy_deps.py` when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
-  "openai==2.24.0",
-  "certifi==2026.5.20",
+  # Keep the reviewed runtime versions shared with Hindsight rather than
+  # downgrading a migrated environment to older SDK/CA/HTTP releases.
+  "openai==2.42.0",
+  "certifi==2026.6.17",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
-  "rich==14.3.3",
+  "rich==15.0.0",
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
+  "requests==2.34.2",  # Includes CVE-2026-25645 fix.
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
@@ -70,8 +72,7 @@ dependencies = [
   # tools/lazy_deps.py treats every version constraint as satisfied, and
   # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
   # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
-  # Pinned to the version already resolved in uv.lock (no resolution churn).
-  "packaging==26.0",
+  "packaging==26.2",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both
@@ -226,7 +227,9 @@ a2a = ["a2a-sdk[http-server]==1.1.0", "uvicorn[standard]==0.41.0"]
 # tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
-mistral = ["mistralai==2.4.8"]
+# 2.10.1 removes the semantic-conventions <0.61 cap that conflicts with
+# Hindsight's >=0.62b1 requirement; stay on the httpx-based 2.x SDK.
+mistral = ["mistralai==2.10.1"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
