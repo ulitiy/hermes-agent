@@ -99,6 +99,7 @@ def decompose_triage_task(
     Returns child ids in input order, or None when the root is missing / not
     in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
     """
+    from hermes_cli.kanban_triage_policy import triage_escalation_reason
     from hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
         write_txn, recompute_ready,
@@ -119,6 +120,8 @@ def decompose_triage_task(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        if triage_escalation_reason(conn, task_id):
             return None
         # Dependency links alone do not imply lineage. The completion event is
         # committed with the graph, and survives re-triage or unlinking.
