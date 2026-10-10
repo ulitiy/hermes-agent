@@ -84,8 +84,8 @@ def _hermes_home_points_at_production(value: str) -> bool:
     inside the real ``~/.hermes`` — the escape vector that landed pytest
     fixture rows (chat-1 / wx-chat sessions, /tmp/pytest-of-* routing
     scopes) in the live state.db and flipped its journal mode under the
-    WAL-mode gateway writer. Only a genuinely custom (non-production)
-    HERMES_HOME is honored now.
+    WAL-mode gateway writer. This predicate classifies deny-list roots; even
+    custom homes must be redirected before collection imports application code.
     """
     if not value:
         return True
@@ -143,7 +143,7 @@ for _key in SCRATCH_TMP_ENV_VARS:
 tempfile.tempdir = None  # re-resolve after stripping guarded temp directories
 os.environ.setdefault("TMPDIR", tempfile.gettempdir())
 
-if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
+if not _PRE_SANDBOX_HERMES_HOME or _PRE_SANDBOX_HERMES_HOME != os.environ.get("HERMES_TEST_SANDBOX_HOME"):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     # Marker for re-imported conftest module bodies (xdist workers exec this
@@ -617,13 +617,9 @@ def _capture_real_kanban_root() -> Path:
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
     ):
-        # HERMES_HOME was genuinely set to a CUSTOM root before the sandbox
-        # (production-pointing values are sandboxed away above, in which case
-        # the env still holds the tempdir and the resolver would be wrong) —
-        # honor it via the normal resolver (it may be a profile dir whose
-        # root matters).
-        from hermes_constants import get_default_hermes_root
-        return get_default_hermes_root().resolve()
+        # Use the captured value, not the newly redirected collection sandbox.
+        home = Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+        return home.parent.parent if home.parent.name == "profiles" else home
     # No pre-existing HERMES_HOME: the real root is the platform default,
     # NOT the sandbox tempdir now sitting in the env.
     return (Path.home() / ".hermes").resolve()
