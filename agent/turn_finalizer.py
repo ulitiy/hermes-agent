@@ -25,7 +25,9 @@ from agent.served_model import result_model_fields
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
 # real content and is not flagged. (#65919)
-_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic")
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic", "_pre_verify_synthetic", "_file_mutation_recovery_synthetic",
+)
 
 _SENTENCE_END = {".", "!", "?", "。", "！", "？", "`", ")"}
 
@@ -85,8 +87,10 @@ def _record_kanban_budget_exhausted(
 
 
 def _drop_verification_continuation_scaffolding(messages) -> None:
-    """Remove verification-continuation nudges in place; only the synthetic nudges carry
-    these flags, so the real attempted final answer persisted to state.db survives."""
+    """Remove internal retry rows; file-recovery also flags the rejected answer.
+
+    Ordinary verification candidates are real content and remain unflagged.
+    """
     messages[:] = [
         m for m in messages
         if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))

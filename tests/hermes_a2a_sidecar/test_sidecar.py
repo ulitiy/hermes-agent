@@ -11,6 +11,7 @@ from a2a.types import Role, SendMessageRequest
 from hermes_a2a_sidecar.app import create_app
 from hermes_a2a_sidecar.config import PeerPolicy, SidecarConfig
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect_closing
 
 
 def _config(tmp_path, token: str = "test-token") -> SidecarConfig:
@@ -96,7 +97,7 @@ def test_authenticated_a2a_message_creates_kanban_task(tmp_path, monkeypatch):
     result = body["result"]["task"]
     assert result["status"]["state"] == "TASK_STATE_WORKING"
     kanban_id = result["metadata"]["hermes_kanban_id"]
-    with kb.connect_closing(board="default") as conn:
+    with connect_closing(board="default") as conn:
         task = kb.get_task(conn, kanban_id)
     assert task is not None
     assert task.assignee == "engineer"
@@ -128,7 +129,7 @@ def test_completed_kanban_task_syncs_to_a2a_result(tmp_path, monkeypatch):
     kanban_id = create["metadata"]["hermes_kanban_id"]
 
     # A downstream Hermes worker completes the Kanban task.
-    with kb.connect_closing(board="default") as conn:
+    with connect_closing(board="default") as conn:
         kb.complete_task(conn, kanban_id, summary="All done. Result: 42.", metadata={"tests_run": 3})
 
     get_response = client.post(
@@ -202,7 +203,7 @@ def test_artifact_submission_is_blocked_for_review(tmp_path, monkeypatch):
     result = response.json()["result"]["task"]
     assert result["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
     kanban_id = result["metadata"]["hermes_kanban_id"]
-    with kb.connect_closing(board="default") as conn:
+    with connect_closing(board="default") as conn:
         task = kb.get_task(conn, kanban_id)
     assert task is not None
     assert task.status == "blocked"
