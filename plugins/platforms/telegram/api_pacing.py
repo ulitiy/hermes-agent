@@ -42,6 +42,16 @@ class TelegramApiPacingMixin:
         key = str(normalize_telegram_chat_id(chat_id))
         lock = self._bot_api_locks.setdefault(key, asyncio.Lock())
         async with lock:
+            from telegram.error import RetryAfter
+            from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
+            penalties = self.__dict__.setdefault("_bot_api_retry_after_until", {})
+            remaining = penalties.get(key, 0.0) - time.monotonic()
+            if remaining > _FLOOD_INLINE_WAIT_CAP_SECS:
+                # No request has started: preserve the known flood refusal so
+                # the send path/ledger can defer, never call this a timeout.
+                raise RetryAfter(math.ceil(remaining))
+            if remaining <= 0:
+                penalties.pop(key, None)
             delay = self._bot_api_next_allowed_at.get(key, 0.0) - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
@@ -51,16 +61,35 @@ class TelegramApiPacingMixin:
                 wait = self._telegram_api_retry_after_seconds(exc)
                 if wait is not None:
                     self._bot_api_next_allowed_at[key] = time.monotonic() + wait + 0.1
+                    penalties[key] = self._bot_api_next_allowed_at[key]
                 raise
             self._bot_api_next_allowed_at[key] = time.monotonic() + interval
             return result
 
+    async def _paced_call_with_deadline(
+        self, chat_id, func, /, *args, timeout, label, dump_on_blocked_loop=False, **kwargs,
+    ):
+        from plugins.platforms.telegram.adapter import _await_with_thread_deadline
+
+        async def request():
+            # Construct the coroutine only after the local queue/cooldown; the
+            # watchdog measures transport time, not a known-unsent wait.
+            return await _await_with_thread_deadline(
+                func(*args, **kwargs), timeout=timeout, label=label,
+                dump_on_blocked_loop=dump_on_blocked_loop,
+            )
+
+        return await self._rate_limited_telegram_call(chat_id, request)
+
     async def _paced_rich_edit(self, chat_id, payload):
+        from plugins.platforms.telegram.adapter import _TEXT_SEND_DEADLINE
         try:
-            return await self._rate_limited_telegram_call(chat_id, self._bot.do_api_request, "editMessageText", api_kwargs=payload)
+            return await self._paced_call_with_deadline(chat_id, self._bot.do_api_request, "editMessageText", api_kwargs=payload,
+                                                        timeout=_TEXT_SEND_DEADLINE, label="telegram-send")
         except Exception as exc:
             wait = self._telegram_api_retry_after_seconds(exc)
             if wait is None or wait > 30:
                 raise
             await asyncio.sleep(wait)
-            return await self._rate_limited_telegram_call(chat_id, self._bot.do_api_request, "editMessageText", api_kwargs=payload)
+            return await self._paced_call_with_deadline(chat_id, self._bot.do_api_request, "editMessageText", api_kwargs=payload,
+                                                        timeout=_TEXT_SEND_DEADLINE, label="telegram-send")
