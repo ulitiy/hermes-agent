@@ -146,7 +146,12 @@ def apply_stop_gates(
         agent._file_mutation_recovery_attempts = 1
         final_msg["_file_mutation_recovery_synthetic"] = True
         append_message(messages, final_msg)
-        return _continue(recovery, "_file_mutation_recovery_synthetic")
+        verdict = _continue(recovery, "_file_mutation_recovery_synthetic")
+        # Unlike an unverified report, this answer has a known failed edit.
+        # Budget exhaustion must summarize the failure, not resurrect that claim.
+        verdict.pending_verification_response = None
+        verdict.pending_verification_response_previewed = False
+        return verdict
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:

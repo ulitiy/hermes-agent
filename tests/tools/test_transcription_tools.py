@@ -486,8 +486,8 @@ class TestTranscribeLocalExtended:
         # WhisperModel should be created only once
         assert mock_whisper_cls.call_count == 1
 
-    def test_config_device_and_compute_type_passed_to_whisper(self, tmp_path):
-        """User-configured device and compute_type should be forwarded to WhisperModel.
+    def test_config_device_and_compute_type_passed_to_loader(self, tmp_path):
+        """Forward user config to the loader, which owns host-specific safety overrides.
 
         Regression test for #8319: these values were hardcoded to "auto".
         """
@@ -502,7 +502,7 @@ class TestTranscribeLocalExtended:
 
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
-        mock_whisper_cls = MagicMock(return_value=mock_model)
+        mock_loader = MagicMock(return_value=mock_model)
 
         fake_config = {
             "local": {
@@ -512,7 +512,7 @@ class TestTranscribeLocalExtended:
         }
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._load_local_whisper_model", mock_loader), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
              patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
@@ -520,8 +520,8 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with(
-            "base", local_files_only=True, device="cpu", compute_type="float32"
+        mock_loader.assert_called_once_with(
+            "base", device="cpu", compute_type="float32"
         )
 
 

@@ -14,6 +14,7 @@ from a2a.types import ListTasksRequest, ListTasksResponse, Role, Task, TaskState
 from a2a.helpers import new_text_artifact, new_text_message
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect_closing
 
 
 SCHEMA = """
@@ -215,7 +216,7 @@ class HermesKanbanTaskStore(TaskStore):
             return task
         board = self.default_board or ""
         try:
-            with kb.connect_closing(board=board or None) as conn:
+            with connect_closing(board=board or None) as conn:
                 ktask = kb.get_task(conn, kanban_task_id)
                 if not ktask:
                     return task

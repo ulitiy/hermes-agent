@@ -35,6 +35,7 @@ logger = logging.getLogger("run_agent")  # origin module's name: log records / c
 # Persistence must skip them or a resumed session replays synthetic turns / breaks prefix-cache reuse.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
+    "_file_mutation_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
     "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic

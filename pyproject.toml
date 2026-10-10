@@ -682,6 +682,7 @@ exclude-newer = "14 days"
 # 14-day window is younger than the reviewed release.
 
 [tool.uv.exclude-newer-package]
+a2a-sdk = false
 agent-client-protocol = false
 aiohttp = false
 aiohttp-socks = false

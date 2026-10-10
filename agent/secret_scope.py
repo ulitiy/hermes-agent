@@ -208,6 +208,10 @@ _GLOBAL_ENV_PREFIXES = (
 
 def _is_global_env(name: str) -> bool:
     """True for genuinely process-global (non-profile-secret) env vars."""
+    # The local injection credential/listener belong to the receiving bot, not
+    # the process-wide Telegram tuning knobs covered by the prefix below.
+    if name in {"HERMES_TELEGRAM_INJECT_SECRET", "HERMES_TELEGRAM_INJECT_PORT"}:
+        return False
     return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES)
 
 
