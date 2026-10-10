@@ -7,12 +7,16 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize("preset_home", [False, True])
+@pytest.mark.parametrize("preset_home", ["unset", "native", "profile", "custom"])
 @pytest.mark.parametrize("collect_only", [False, True])
 def test_cron_collection_and_crud_preserve_operator_store(tmp_path, preset_home, collect_only):
     repo = Path(__file__).resolve().parents[1]
     operator = tmp_path / "operator"
     store = operator / ".hermes" / "cron" / "jobs.json"
+    if preset_home == "profile":
+        store = operator / ".hermes" / "profiles" / "fixture" / "cron" / "jobs.json"
+    elif preset_home == "custom":
+        store = operator / "custom-runtime" / "cron" / "jobs.json"
     store.parent.mkdir(parents=True)
     sentinel = '{"jobs": [], "version": 1}\n'
     store.write_text(sentinel)
@@ -22,7 +26,7 @@ def test_cron_collection_and_crud_preserve_operator_store(tmp_path, preset_home,
         "PATH": os.environ.get("PATH", ""), "TZ": "UTC",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    if preset_home:
+    if preset_home != "unset":
         env["HERMES_HOME"] = str(store.parent.parent)
     args = ["-o", "addopts=", "-q", "tests/cron/test_ticker_stall.py"]
     if collect_only:

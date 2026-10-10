@@ -17,6 +17,7 @@ was filed for. These tests pin per-profile isolation so a stale-branch merge or
 a re-anchor "fix" can't silently flip it back.
 """
 import importlib
+import os
 from pathlib import Path
 
 
@@ -34,36 +35,24 @@ def _set_profile_env(monkeypatch, root: Path, profile_home: Path) -> None:
 def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
     """Under a profile HERMES_HOME (<root>/profiles/<name>), the cron store
     resolves to <profile>/cron, NOT the shared <root>/cron."""
+    sandbox_home = os.environ["HERMES_HOME"]
     root = tmp_path / "hermes_home"
     profile_home = root / "profiles" / "coder"
     profile_home.mkdir(parents=True)
 
-    _set_profile_env(monkeypatch, root, profile_home)
-
     import hermes_constants
-
-    # Sanity: the override is wired the way the gateway sees it.
-    assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
-    assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
-
-    # cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
-    # fresh import under this env anchors the store at <profile>/cron.
     from cron import jobs
-
-    importlib.reload(jobs)
     try:
-        assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
-        assert (
-            jobs.JOBS_FILE.resolve()
-            == (profile_home / "cron" / "jobs.json").resolve()
-        )
-        # The shared-root path must NOT be the store — that would re-break
-        # per-profile isolation (#4707).
-        assert (
-            jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
-        )
+        with monkeypatch.context() as profile_patch:
+            _set_profile_env(profile_patch, root, profile_home)
+            assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
+            assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
+            importlib.reload(jobs)
+            assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
+            assert jobs.JOBS_FILE.resolve() == (profile_home / "cron" / "jobs.json").resolve()
+            assert jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
     finally:
-        monkeypatch.undo()
         importlib.reload(jobs)
+    assert os.environ["HERMES_HOME"] == sandbox_home
 
 
