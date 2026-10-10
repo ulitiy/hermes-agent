@@ -1021,7 +1021,7 @@ class SessionDB:
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
-                # so we skip schema init entirely (no DDL, no FTS probe, no
+                # so we skip schema init entirely (no DDL, no write probe, no
                 # column reconcile). Crucially this takes NO write lock, so
                 # polling another profile's live DB on every sidebar refresh
                 # never contends with that profile's running backend. The DB
@@ -1036,6 +1036,16 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # Probe existing virtual tables with SELECTs only. Writable
+                # schema initialization normally sets these capability flags.
+                cursor = self._conn.cursor()
+                self._fts_enabled = (
+                    self._fts_table_probe(cursor, "messages_fts") is True
+                )
+                if self._fts_enabled:
+                    self._trigram_available = (
+                        self._fts_table_probe(cursor, "messages_fts_trigram") is True
+                    )
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1350,15 +1360,16 @@ class SessionDB:
     def close(self):
         """Close the database connection.
 
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        Writable connections attempt a TRUNCATE WAL checkpoint first so that
+        exiting writers help shrink the WAL file. Readers never checkpoint.
         """
         with self._lock:
             if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                if not self.read_only:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception:
+                        pass
                 self._conn.close()
                 self._conn = None
 
