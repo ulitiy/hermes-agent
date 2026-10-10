@@ -66,8 +66,13 @@ def test_parallel_requests_overlap_without_exceeding_limit(tmp_path, connections
                 with lock:
                     active -= 1
 
+    class ConcurrentServer(ThreadingHTTPServer):
+        # The stdlib backlog of 5 can reset an eight-connection burst before
+        # all handlers reach the barrier; this test measures overlap, not TCP admission.
+        request_queue_size = 16
+
     dest = tmp_path / "big.bin"
-    with ThreadingHTTPServer(("127.0.0.1", 0), ConcurrentHandler) as server:
+    with ConcurrentServer(("127.0.0.1", 0), ConcurrentHandler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
