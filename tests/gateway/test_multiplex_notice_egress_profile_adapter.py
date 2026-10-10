@@ -19,6 +19,7 @@ from gateway.slash_commands import _restart_notify_payload
 
 class _Adapter:
     def __init__(self):
+        self.config = PlatformConfig(enabled=True, token="t")
         self.sent, self.handled = [], []
 
     async def send(self, chat_id, content=None, metadata=None, **kw):

@@ -664,19 +664,22 @@ async def test_restart_notification_watcher_deadline_retains_claimed_failures(
     }))
 
     runner, adapter = make_restart_runner()
-    adapter.send = AsyncMock(return_value=SendResult(
-        success=False,
-        error="send_path_degraded",
-        retryable=True,
-    ))
+    clock = {"now": 0.0}
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: clock["now"])
+
+    async def fail_send(*args, **kwargs):
+        clock["now"] += 1.0
+        return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+    adapter.send = AsyncMock(side_effect=fail_send)
 
     await runner._watch_restart_notification(
         initial_delay=0,
         max_delay=0,
-        timeout=0.02,
+        timeout=2.0,
     )
 
-    assert adapter.send.await_count >= 2
+    assert adapter.send.await_count == 2
     assert not notify_path.exists()
     assert claimed_path.exists()
 

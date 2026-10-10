@@ -39,6 +39,9 @@ def _runner_with_real_runtime_resolution():
     runner._pending_model_notes = runner._pending_skills_reload_notes = {}
     runner.session_store._entries = {}
     runner._get_system_prompt_for_channel.return_value = None
+    runner._load_source_profile.return_value = None
+    runner._parse_turn_reasoning_prefix.side_effect = lambda text: (None, text)
+    runner._apply_turn_reasoning_override.side_effect = lambda config, _mode: config
     runner._resolve_session_reasoning_config.return_value = None
     runner._resolve_session_service_tier.return_value = None
     runner._agent_config_signature.return_value = ("sig",)
