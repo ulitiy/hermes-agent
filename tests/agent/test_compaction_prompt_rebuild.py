@@ -15,6 +15,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.system_prompt import invalidate_system_prompt
 
 
@@ -279,7 +281,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+                self.assertIn(f"- Root: {other.resolve()}", build_system_prompt(moved))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -300,9 +302,39 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                        return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
                 resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
+                self.assertIn(f"- Root: {repo.resolve()}", build_system_prompt(resumed))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.mark.require_symlinks
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("start_at_alias", [False, True])
+def test_workspace_snapshot_survives_cwd_alias_change(tmp_path, monkeypatch, resume, start_at_alias):
+    """Logical/physical spellings identify one cwd, in memory and after resume."""
+    from agent.system_prompt import _coding_parts
+
+    repo = _init_repo(tmp_path / "repo", "initial").resolve()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repo, target_is_directory=True)
+    start, end = (alias, repo) if start_at_alias else (repo, alias)
+    agent = _agent(valid_tool_names={"terminal"}, platform="cli", model="test-model")
+    monkeypatch.setattr("agent.system_prompt.resolve_context_cwd", lambda: start)
+    snapshot = _coding_parts(agent)[1]
+    assert len(snapshot) == 1 and "Status: clean" in snapshot[0]
+    (repo / "untracked.txt").write_text("changed", encoding="utf-8")
+    if resume:
+        stored = f"Host: fixture\nUser home directory: /h\nCurrent working directory: {start}\n\n{snapshot[0]}"
+        agent = _agent(valid_tool_names={"terminal"}, platform="cli", model="test-model",
+                       _cached_system_prompt=None, session_id="fixture",
+                       _session_db=SimpleNamespace(get_session=lambda _: {"system_prompt": stored}))
+    monkeypatch.setattr("agent.system_prompt.resolve_context_cwd", lambda: end)
+    assert _coding_parts(agent)[1] == snapshot
+    # A genuinely different cwd inside the same repository must still re-probe.
+    subdir = repo / "subdir"
+    subdir.mkdir()
+    monkeypatch.setattr("agent.system_prompt.resolve_context_cwd", lambda: subdir)
+    assert "Status: 1 untracked" in _coding_parts(agent)[1][0]
 
 
 if __name__ == "__main__":
