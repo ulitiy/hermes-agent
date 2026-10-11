@@ -173,8 +173,9 @@ PARENT_ID = "1513247605675790346"
 
 def _effective_ephemeral(runner, kw) -> str:
     """The real TurnRunner combiner applied to what reached ``_run_agent``."""
+    from gateway.run_topic_behavior import build_turn_ephemeral_prompt
     ctx = TurnContext(source=kw["source"], context_prompt=kw["context_prompt"], channel_prompt=kw.get("channel_prompt"))
-    return TurnRunner(runner, ctx)._combined_ephemeral_prompt()
+    return build_turn_ephemeral_prompt(runner, ctx)
 
 
 def _thread_origin() -> dict:

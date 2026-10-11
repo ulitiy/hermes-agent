@@ -1836,26 +1836,6 @@ class TurnRunner:
         offset = 0 if (session_was_split or compacted_in_place) else len(agent_history)
         return compacted_in_place, agent_session_id, offset
 
-    def _combined_ephemeral_prompt(self) -> str:
-        """Platform context + YAML channel_prompts hint + channel_overrides system_prompt (or global
-        ephemeral) + the gateway ephemeral prompt."""
-        ctx = self._ctx
-        combined = ctx.context_prompt or ""
-        for extra in (
-            (ctx.channel_prompt or "").strip(),
-            self._runner._get_system_prompt_for_channel(
-                ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
-                parent_id=getattr(ctx.source, "parent_chat_id", None),
-            ),
-        ):
-            if extra:
-                combined = (combined + "\n\n" + extra).strip()
-        profile_name = self._runner._load_source_profile(ctx.source)
-        if profile_name:
-            soul = self._runner._load_profile_soul(profile_name)
-            if soul:
-                combined = (combined + f"\n\n## Active role profile: {profile_name}\n\n{soul}").strip()
-        return combined
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:
         """Append MEDIA:<path> tags from tool results (e.g. TTS) that the model's final text omits, so
@@ -1908,7 +1888,8 @@ class TurnRunner:
         # *subprocess* exports HERMES_SESSION_KEY (from its own --session-key argv, a separate process) — so
         # removing this in-process gateway write does not affect any of them.
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
-        combined_ephemeral = self._combined_ephemeral_prompt()
+        from gateway.run_topic_behavior import build_turn_ephemeral_prompt
+        combined_ephemeral = build_turn_ephemeral_prompt(runner, ctx)
         max_iterations = _current_max_iterations()
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(

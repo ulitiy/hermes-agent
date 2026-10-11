@@ -18,8 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from gateway.run_shutdown import _resolve_gateway_exit_verdict
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE, _resolve_gateway_exit_verdict
 
 
 @pytest.mark.parametrize("restart,signal,detached,expected", [

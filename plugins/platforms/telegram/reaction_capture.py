@@ -1,13 +1,75 @@
-"""Capture opt-in user reactions on indexed bot replies, never on inbound text."""
+"""Telegram reaction lifecycle and opt-in capture on indexed bot replies."""
 
 import logging
 
 from gateway.platforms._shared import get_scoped_secret
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramReactionCaptureMixin:
+    def _reactions_enabled(self) -> bool:
+        """Scoped env → profile YAML → off; a multiplex miss never reads another profile."""
+        from plugins.platforms.telegram.adapter import _extra_or_secret
+
+        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
+        if configured is None:
+            return False
+        return str(configured).lower() not in {"false", "0", "no"}
+
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str | None) -> bool:
+        """Set a single emoji; None clears all bot-set reactions."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
+            return True
+        except Exception as exc:
+            logger.exception("[%s] Telegram reaction failed (%s)", self.name, emoji,
+                             exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
+            return False
+
+    async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
+        """Clear all bot-set reactions."""
+        return await self._set_reaction(chat_id, message_id, None)
+
+    async def send_reaction_only_response(self, event: MessageEvent, emoji: str) -> SendResult:
+        """React to the inbound message without a text reply."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id):
+            return SendResult(success=False, error="reaction-only reply missing Telegram chat_id/message_id")
+        ok = await self._set_reaction(chat_id, message_id, emoji)
+        return SendResult(success=ok, message_id=str(message_id) if ok else None,
+                          error=None if ok else "Telegram set_message_reaction failed")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Replace progress with the outcome, except after an intentional reaction-only reply."""
+        if getattr(event, "metadata", {}).get("_hermes_reaction_only_response"):
+            return
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id):
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self._clear_reactions(chat_id, message_id)
+        else:
+            await self._set_reaction(chat_id, message_id, "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e")
+
     @staticmethod
     def _reaction_capture_enabled() -> bool:
         return (get_scoped_secret("HERMES_TELEGRAM_REACTION_CAPTURE") or "false").lower() in {
@@ -26,7 +88,9 @@ class TelegramReactionCaptureMixin:
             store._ensure_loaded()
             entry = store._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
-        except Exception:
+        except Exception as exc:
+            logger.warning("Reaction capture could not resolve session",
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
             return None
 
     def _on_final_response_sent(self, event, session_key, result, text_content) -> None:

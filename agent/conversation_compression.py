@@ -37,6 +37,7 @@ from agent.conversation_compression_telemetry import (
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
 )
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.message_content import compression_message_text as _message_text
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
@@ -2208,17 +2209,6 @@ _SYNTHETIC_USER_PREFIXES = (
     "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
     "[IMPORTANT: Background process ",
 )
-
-
-def _message_text(message: Any) -> str:
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict)
-        )
-    return ""
 
 
 _SYNTHETIC_USER_FLAGS = (

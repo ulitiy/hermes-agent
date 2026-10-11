@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from a2a.helpers import new_text_artifact, new_text_message
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect_closing
 
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS a2a_tasks (
@@ -62,7 +64,7 @@ KANBAN_TO_A2A_STATE = {
 def _state_name(state: int) -> str:
     try:
         return TaskState.Name(state)
-    except Exception:
+    except (TypeError, ValueError):
         return str(state)
 
 
@@ -222,7 +224,9 @@ class HermesKanbanTaskStore(TaskStore):
                     return task
                 state = KANBAN_TO_A2A_STATE.get(ktask.status, TaskState.TASK_STATE_WORKING)
                 summary = kb.latest_summary(conn, kanban_task_id) or ktask.result or ""
-        except Exception:
+        except Exception as exc:
+            logger.warning("A2A Kanban sync failed; retaining last known state",
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
             return task
 
         if task.status.state != state:

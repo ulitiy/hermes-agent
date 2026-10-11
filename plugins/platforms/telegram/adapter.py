@@ -178,7 +178,9 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_entities import (
+    expand_link_entities, _unwrap_tappable_slash_command_code,
+)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.reaction_capture import TelegramReactionCaptureMixin
@@ -397,79 +399,6 @@ def _strip_mdv2(text: str) -> str:
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
 
-# Telegram clients treat bot commands in normal prose as tappable commands, but
-# inline/fenced code spans are copy-only.  LLMs commonly suggest commands as
-# ``/restart`` or fenced `/new` snippets; unwrap command-only code so tapping the
-# visible slash command executes it instead of copying the code span.
-_TELEGRAM_FENCED_CODE_RE = re.compile(r"```(?:[^\n]*\n)?[\s\S]*?```")
-_TELEGRAM_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_TELEGRAM_TAPPABLE_SLASH_COMMAND_RE = re.compile(
-    r"^/(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
-    r"(?P<bot>@[A-Za-z0-9_]{5,32})?"
-    r"(?P<args>\s+.*)?$"
-)
-
-
-
-def _normalize_tappable_telegram_command_line(line: str) -> Optional[str]:
-    """Return a Telegram-tappable command line, or None if *line* is not one."""
-    from hermes_cli.commands_platforms import _sanitize_telegram_name
-    raw = line.strip()
-    if not raw:
-        return ""
-    match = _TELEGRAM_TAPPABLE_SLASH_COMMAND_RE.match(raw)
-    if not match:
-        return None
-    name = _sanitize_telegram_name(match.group("name"))
-    if not name:
-        return None
-    return f"/{name}{match.group('bot') or ''}{match.group('args') or ''}"
-
-
-def _unwrap_tappable_slash_command_code(text: str) -> str:
-    """Unwrap code formatting around standalone slash commands for Telegram.
-
-    Normal code must remain copy-friendly.  Only inline code whose entire
-    contents are a slash command, and fenced blocks where every nonblank line is
-    a slash command, are rewritten into plain command text.
-    """
-    if not text or "`" not in text or "/" not in text:
-        return text
-
-    def _unwrap_inline(segment: str) -> str:
-        def _replace_inline(match: re.Match[str]) -> str:
-            normalized = _normalize_tappable_telegram_command_line(match.group(1))
-            return normalized if normalized is not None else match.group(0)
-
-        return _TELEGRAM_INLINE_CODE_RE.sub(_replace_inline, segment)
-
-    def _unwrap_fenced(block: str) -> Optional[str]:
-        inner = block[3:-3]
-        body = inner.split("\n", 1)[1] if "\n" in inner else inner
-        if not body.strip():
-            return None
-        out_lines: list[str] = []
-        saw_command = False
-        for line in body.splitlines():
-            normalized = _normalize_tappable_telegram_command_line(line)
-            if normalized is None:
-                return None
-            if normalized:
-                saw_command = True
-            out_lines.append(normalized)
-        if not saw_command:
-            return None
-        return "\n".join(out_lines)
-
-    out: list[str] = []
-    pos = 0
-    for match in _TELEGRAM_FENCED_CODE_RE.finditer(text):
-        out.append(_unwrap_inline(text[pos:match.start()]))
-        unwrapped = _unwrap_fenced(match.group(0))
-        out.append(unwrapped if unwrapped is not None else match.group(0))
-        pos = match.end()
-    out.append(_unwrap_inline(text[pos:]))
-    return "".join(out)
 
 
 def _separate_chunk_indicator_from_fence(text: str) -> str:
@@ -3356,105 +3285,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
 
-    # ── HERMES-LOCAL PATCH: synthetic message injection ───────────────
-    async def _start_injection_server(self) -> None:
-        """Localhost HTTP endpoint for injecting synthetic user messages.
-
-        Used by iphone_relay.py to deliver voice transcripts into this
-        Telegram session as if the user had typed them. Result: voice
-        and text share the exact same in-memory conversation history.
-
-        Disabled unless HERMES_TELEGRAM_INJECT_SECRET is set.
-        Bound strictly to 127.0.0.1.
-        """
-        secret = (_get_scoped_secret("HERMES_TELEGRAM_INJECT_SECRET") or "").strip()
-        if not secret:
-            self._injection_runner = None
-            return
-
-        try:
-            from aiohttp import web
-        except ImportError:
-            logger.warning("[%s] aiohttp missing — injection endpoint disabled", self.name)
-            self._injection_runner = None
-            return
-
-        port = int(_get_scoped_secret("HERMES_TELEGRAM_INJECT_PORT") or "8643")
-
-        async def handler(request):
-            if request.headers.get("X-Inject-Secret") != secret:
-                return web.json_response({"error": "forbidden"}, status=403)
-            try:
-                data = await request.json()
-            except Exception:
-                return web.json_response({"error": "bad_json"}, status=400)
-
-            chat_id = data.get("chat_id")
-            text = data.get("text")
-            if not chat_id or not text:
-                return web.json_response({"error": "missing chat_id/text"}, status=400)
-
-            user_id = str(data.get("user_id") or chat_id)
-            user_name = data.get("user_name") or "User"
-            thread_id = data.get("thread_id") or data.get("message_thread_id")
-            chat_type = data.get("chat_type") or ("group" if thread_id is not None else "dm")
-
-            try:
-                event = self._build_synthetic_text_event(
-                    chat_id=str(chat_id),
-                    text=str(text),
-                    user_id=user_id,
-                    user_name=str(user_name),
-                    thread_id=str(thread_id) if thread_id is not None else None,
-                    chat_type=str(chat_type),
-                )
-                asyncio.create_task(self.handle_message(event))
-            except Exception as e:
-                logger.error("[%s] Injection dispatch failed: %s", self.name, e, exc_info=True)
-                return web.json_response({"error": "dispatch_failed", "detail": str(e)}, status=500)
-
-            return web.json_response({"status": "queued"})
-
-        app = web.Application()
-        app.router.add_post("/inject", handler)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
-        await site.start()
-        self._injection_runner = runner
-        logger.info(
-            "[%s] Injection endpoint listening on 127.0.0.1:%d (POST /inject)",
-            self.name, port,
-        )
-
-    def _build_synthetic_text_event(
-        self,
-        chat_id: str,
-        text: str,
-        user_id: str,
-        user_name: str,
-        thread_id: Optional[str] = None,
-        chat_type: str = "dm",
-    ) -> MessageEvent:
-        """Build a MessageEvent for a synthetic injected message."""
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=user_name,
-            chat_type=chat_type,
-            user_id=user_id,
-            user_name=user_name,
-            thread_id=thread_id,
-            chat_topic=None,
-            message_id=None,
-        )
-        return MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=None,
-            message_id=None,
-            timestamp=datetime.now(),
-        )
 
     async def _set_status_indicator(self, online: bool) -> None:
         """Set the bot's short description to the online/offline text (closest Bot API surface to
@@ -3611,15 +3441,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
 
-        # HERMES-LOCAL PATCH: tear down injection endpoint before cancelling
-        # delayed deliveries so new synthetic turns cannot enter teardown.
-        injection_runner = getattr(self, "_injection_runner", None)
-        if injection_runner is not None:
-            try:
-                await self._await_disconnect_step(injection_runner.cleanup(), _DISCONNECT_STEP_TIMEOUT, "injection cleanup")
-            except Exception as e:
-                logger.warning("[%s] Injection endpoint cleanup failed: %s", self.name, e)
-            self._injection_runner = None
+        # Fence the local entry before cancelling delayed deliveries.
+        await self._stop_injection_server()
 
         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
 
@@ -7332,78 +7155,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramNewSessionMixin, Telegra
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
             timestamp=message.date)
 
-    # -- Message reactions (processing lifecycle) --
-
-    def _reactions_enabled(self) -> bool:
-        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
-
-        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
-        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
-        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
-        """
-        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
-        if configured is None:
-            return False
-        return str(configured).lower() not in {"false", "0", "no"}
-
-    async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
-        """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
-        if not self._bot:
-            return False
-        try:
-            await self._bot.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
-            return True
-        except Exception as e:
-            if emoji is None:
-                logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
-            else:
-                logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
-            return False
-
-    async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
-        """Clear all bot-set reactions."""
-        return await self._set_reaction(chat_id, message_id, None)
-
-    async def send_reaction_only_response(self, event: MessageEvent, emoji: str) -> SendResult:
-        """React to the inbound Telegram message without sending a text reply."""
-        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if not (chat_id and message_id):
-            return SendResult(
-                success=False,
-                error="reaction-only reply missing Telegram chat_id/message_id",
-            )
-        ok = await self._set_reaction(chat_id, message_id, emoji)
-        return SendResult(
-            success=ok,
-            message_id=str(message_id) if ok else None,
-            error=None if ok else "Telegram set_message_reaction failed",
-        )
-
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
-
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction (set_message_reaction
-        replaces, not adds); CANCELLED explicitly clears the 👀."""
-        if getattr(event, "metadata", {}).get("_hermes_reaction_only_response"):
-            return
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if not (chat_id and message_id):
-            return
-        if outcome == ProcessingOutcome.CANCELLED:
-            await self._clear_reactions(chat_id, message_id)
-        else:
-            await self._set_reaction(chat_id, message_id, "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e")
 
 
 # -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra

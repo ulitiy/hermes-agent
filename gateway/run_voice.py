@@ -32,6 +32,33 @@ _VOICE_MODES = {"off", "voice_only", "all"}
 
 
 class GatewayVoiceMixin:
+    async def _echo_stt_transcripts(
+        self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
+    ) -> bool:
+        """Echo the transcript batch once as quoted speech, for both inbound and queued audio."""
+        if not transcripts:
+            return False
+        try:
+            result = await adapter.send(source.chat_id, self._format_stt_transcription_echo(transcripts), metadata=metadata)
+            return bool(result.success)
+        except Exception as exc:
+            logger.warning("%s echo failed (non-fatal)", log_context,
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
+            return False
+
+    async def _enrich_inbound_voice(
+        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
+    ) -> str:
+        message_text, successful_transcripts = await self._enrich_message_with_transcription(message_text, audio_paths)
+        # Mark no-echo only after a successful send, leaving failed sends retryable.
+        if successful_transcripts and self._should_echo_stt_transcripts():
+            adapter = self._delivery_adapter_for(source)
+            if adapter:
+                metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                if await self._echo_stt_transcripts(adapter, source, successful_transcripts, metadata=metadata):
+                    message_text = self._append_voice_transcript_no_echo_instruction(message_text)
+        return message_text
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.

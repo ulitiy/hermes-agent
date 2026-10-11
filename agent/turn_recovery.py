@@ -824,9 +824,8 @@ def recover_after_classification(
         time.sleep(1)
         return True, recovered_with_pool
 
-    if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):
-        return True, recovered_with_pool
-    return False, recovered_with_pool
+    format_recovered = _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages)
+    return bool(format_recovered), recovered_with_pool
 
 
 def _failed_turn_result(final_response: str, messages: Any, api_call_count: int, error: str) -> dict[str, Any]:

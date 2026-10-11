@@ -1896,12 +1896,6 @@ def resolve_channel_skills(
     return None
 
 
-def _split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
-    """``(generation, callback)`` from a post-delivery slot; legacy bare callbacks have no
-    generation."""
-    return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
-
-
 def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
     """``getattr(obj, name)`` or create it via ``factory`` — the getattr-guard for
     tests that build adapters via ``object.__new__`` and never run ``__init__``."""
@@ -3477,51 +3471,6 @@ class BasePlatformAdapter(SessionProgressMixin, ABC):
             self._active_sessions[session_key].set()
         await self._stop_typing_quietly(chat_id, metadata)
 
-    def register_post_delivery_callback(
-        self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
-        """Register a deferred callback to fire after the main response. Same-key registrations are
-        chained (both fire in order, per-callback exception isolation) so independent features
-        coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
-        fresher slot."""
-        if not session_key or not callable(callback):
-            return
-        existing = self._post_delivery_callbacks.get(session_key)
-        if existing is not None:
-            existing_gen, existing_cb = _split_post_delivery_entry(existing)
-            if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
-                return
-            # Same-or-newer generation: chain so both fire in registration order.
-            if callable(existing_cb) and (
-                existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
-        self._post_delivery_callbacks[session_key] = (
-            callback if generation is None else (int(generation), callback))
-
-    @staticmethod
-    def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
-        """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
-        async so coroutines returned by async hooks are awaited, not dropped."""
-        async def _chained() -> None:
-            for _cb in callbacks:
-                try:
-                    _result = _cb()
-                    if inspect.isawaitable(_result):
-                        await _result
-                except Exception:
-                    logger.debug("Post-delivery callback failed", exc_info=True)
-        return _chained
-
-    def pop_post_delivery_callback(
-        self, session_key: str, *, generation: int | None = None) -> Callable | None:
-        """Pop a deferred callback, optionally requiring generation ownership."""
-        entry = self._post_delivery_callbacks.get(session_key) if session_key else None
-        if entry is None:
-            return None
-        entry_generation, callback = _split_post_delivery_entry(entry)
-        if generation is not None and (entry_generation is None or int(entry_generation) != int(generation)):
-            return None
-        self._post_delivery_callbacks.pop(session_key, None)
-        return callback if callable(callback) else None
 
     # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing
     # ``_add_reaction(chat_id, message_id, emoji)`` / ``_remove_reaction(chat_id, message_id)``
@@ -4627,33 +4576,8 @@ class BasePlatformAdapter(SessionProgressMixin, ABC):
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
                 response = None
-            if response:
-                try:
-                    from gateway.response_filters import parse_reaction_only_response
-                    _reaction_only_emoji = parse_reaction_only_response(response)
-                except Exception:
-                    _reaction_only_emoji = None
-                if _reaction_only_emoji:
-                    event.metadata["_hermes_reaction_only_response"] = _reaction_only_emoji
-                    logger.info(
-                        "[%s] Sending reaction-only response %s to %s",
-                        self.name,
-                        _reaction_only_emoji,
-                        event.source.chat_id,
-                    )
-                    result = await self.send_reaction_only_response(
-                        event,
-                        _reaction_only_emoji,
-                    )
-                    _record_delivery(result)
-                    if result is not None and not getattr(result, "success", False):
-                        logger.warning(
-                            "[%s] Reaction-only response failed for %s: %s",
-                            self.name,
-                            event.source.chat_id,
-                            getattr(result, "error", None),
-                        )
-                    response = None
+            if response and await self._consume_reaction_only_response(response, event, _record_delivery):
+                response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:

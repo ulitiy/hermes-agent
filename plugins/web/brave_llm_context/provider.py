@@ -221,7 +221,7 @@ class BraveLLMContextWebSearchProvider(WebSearchProvider):
 
         try:
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             logger.warning("Brave LLM Context response parse error: %s", exc)
             return {
                 "success": False,

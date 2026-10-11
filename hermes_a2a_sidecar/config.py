@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 from hermes_constants import get_default_hermes_root
 
+logger = logging.getLogger(__name__)
 DEFAULT_SKILLS = [
     "delegate_task_to_sasha_hermes",
     "delegate_engineering_task",
@@ -159,7 +161,7 @@ class SidecarConfig:
                     if peer_id:
                         peers[peer_id] = PeerPolicy.from_mapping(peer_id, item)
 
-        env_token = os.environ.get("HERMES_A2A_TOKEN", "")
+        env_token = os.environ.get("HERMES_A2A_TOKEN", "")  # health: allow HX002 -- legacy bearer credential, not behavioral config; PeerPolicy resolves token_env on each authentication
         if env_token and "env" not in peers:
             peers["env"] = PeerPolicy(
                 id="env",
@@ -204,7 +206,9 @@ def load_sidecar_config(overrides: dict[str, Any] | None = None) -> SidecarConfi
         from hermes_cli.config import load_config
 
         base = dict(load_config().get("a2a") or {})
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not load A2A configuration; using disabled defaults",
+                       exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
         base = {}
     if overrides:
         base.update({k: v for k, v in overrides.items() if v is not None})

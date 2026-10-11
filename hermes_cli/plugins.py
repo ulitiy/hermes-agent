@@ -60,6 +60,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id,
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_aux_tasks import get_plugin_auxiliary_tasks
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -2228,12 +2229,6 @@ def resolve_plugin_command_result(result: Any) -> Any:
 def get_plugin_commands() -> dict[str, dict]:
     """Plugin commands dict (name -> {handler, description, plugin}) after idempotent discovery."""
     return _ensure_plugins_discovered()._plugin_commands
-
-
-def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
-    """Plugin auxiliary-task registration dicts sorted by ``key`` (after idempotent discovery)."""
-    manager = _ensure_plugins_discovered()
-    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
 def get_plugin_toolsets() -> list[tuple]:

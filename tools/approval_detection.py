@@ -1521,6 +1521,7 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     basename = os.path.basename(operand)
     return (
         (operand == os.path.join(temp_dir, basename)
+         # no-tmp: ok — recognizes only the legacy alias in an input command; never selects scratch output
          or (raw_temp_dir == "/tmp" and operand == os.path.join(raw_temp_dir, basename)))
         and os.path.dirname(os.path.realpath(operand)) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None

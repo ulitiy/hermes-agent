@@ -28,7 +28,7 @@ def _run(tmp_path, runtime):
 
 def test_seeded_default_runtime_is_dropped_everywhere_and_a_user_pin_survives(tmp_path):
     from hermes_cli.config import load_config
-    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    from hermes_constants import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
 
     terminal, dotenv = _run(tmp_path / "seeded", LEGACY_VERCEL_RUNTIME)
     assert "vercel_runtime" not in terminal, "the seeded default is the template copied, not a choice"

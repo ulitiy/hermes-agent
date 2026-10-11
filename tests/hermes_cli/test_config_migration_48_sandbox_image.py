@@ -23,7 +23,7 @@ def _run(tmp_path, config):
 
 def test_stale_default_is_dropped_and_a_user_pin_survives(tmp_path):
     from hermes_cli.config import load_config
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    from hermes_constants import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
 
     terminal = _run(tmp_path, {"_config_version": 46, "terminal": {
         "backend": "docker",

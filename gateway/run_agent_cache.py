@@ -5,6 +5,7 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import threading
 import time
@@ -45,6 +46,39 @@ def _tuple_agent(entry: Any) -> Any:
 
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
+
+    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+        """Persist the model/provider actually used, including fallback, via the sync SessionDB.
+
+        Called from the run_sync executor thread, not the AsyncSessionDB forwarder.
+        """
+        if not session_id or agent is None or self._session_db is None:
+            return
+        model = getattr(agent, "model", None)
+        if not model:
+            return
+        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
+        runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
+        try:
+            db = self._session_db._db
+            row = db.get_session(session_id)
+            if not row:
+                return
+            raw_config = row.get("model_config")
+            config = {}
+            with suppress(ValueError, TypeError):
+                config = json.loads(raw_config) if raw_config else {}
+            if not isinstance(config, dict):
+                config = {}
+            gateway_runtime = dict(config.get("gateway_runtime") or {})
+            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+                return
+            config["gateway_runtime"] = runtime
+            db.update_session_meta(session_id, json.dumps(config), model=model)
+        except Exception as exc:
+            logger.warning("Failed to sync gateway session model metadata",
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:

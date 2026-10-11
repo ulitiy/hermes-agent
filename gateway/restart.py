@@ -1,5 +1,6 @@
 """Shared gateway restart constants and supervisor detection helpers."""
 
+import logging
 import math
 import os
 import re
@@ -9,12 +10,47 @@ from collections.abc import Callable, Mapping
 
 from hermes_cli.config import DEFAULT_CONFIG
 
+logger = logging.getLogger("gateway.run")
+
 # EX_TEMPFAIL (sysexits.h): ask the service manager to restart after a graceful drain/reload.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 # EX_CONFIG (sysexits.h): fatal configuration error (token collision, no platforms);
 # the s6 finish script maps it to exit 125 so the supervisor stops restarting.
 # See #51228.
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
+
+
+def _exit_with_failure_verdict(runner) -> bool:
+    """True (after logging the reason) when the runner asked for a failure exit."""
+    if not runner.should_exit_with_failure:
+        return False
+    if runner.exit_reason:
+        logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+    return True
+
+
+def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bool:
+    """Resolve the supervisor verdict after startup abort or normal shutdown."""
+    if _exit_with_failure_verdict(runner):
+        return False
+    if runner.exit_code is not None:
+        raise SystemExit(runner.exit_code)
+    if signal_initiated_shutdown and not runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (signal-initiated shutdown without restart "
+            "request) so the service manager can revive the gateway."
+        )
+        return False
+    if runner._restart_via_service:
+        logger.info(
+            "Exiting with code %d (service-restart requested) so the service "
+            "manager relaunches the gateway.", GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
+        raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+    if runner._restart_requested and not getattr(runner, "_restart_detached", False):
+        logger.info("Exiting with code 1 so the service manager revives the requested restart.")
+        return False
+    return True
 
 
 def map_fatal_config_exit_for_launchd(returncode: int) -> int:

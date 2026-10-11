@@ -6,7 +6,77 @@ URL; the model only ever sees the anchor unless the URL is inlined (#31071).
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Optional
+
+
+_TELEGRAM_FENCED_CODE_RE = re.compile(r"```(?:[^\n]*\n)?[\s\S]*?```")
+_TELEGRAM_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_TELEGRAM_TAPPABLE_SLASH_COMMAND_RE = re.compile(
+    r"^/(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
+    r"(?P<bot>@[A-Za-z0-9_]{5,32})?"
+    r"(?P<args>\s+.*)?$"
+)
+
+
+def _normalize_tappable_telegram_command_line(line: str) -> Optional[str]:
+    """Return a Telegram-tappable command line, or None if *line* is not one."""
+    from hermes_cli.commands_platforms import _sanitize_telegram_name
+    raw = line.strip()
+    if not raw:
+        return ""
+    match = _TELEGRAM_TAPPABLE_SLASH_COMMAND_RE.match(raw)
+    if not match:
+        return None
+    name = _sanitize_telegram_name(match.group("name"))
+    if not name:
+        return None
+    return f"/{name}{match.group('bot') or ''}{match.group('args') or ''}"
+
+
+def _unwrap_tappable_slash_command_code(text: str) -> str:
+    """Unwrap command-only code so Telegram renders tappable slash commands.
+
+    Preserve ordinary code verbatim. Only inline code whose entire contents are
+    a command and fences whose every nonblank line is a command are rewritten.
+    """
+    if not text or "`" not in text or "/" not in text:
+        return text
+
+    def _unwrap_inline(segment: str) -> str:
+        def _replace_inline(match: re.Match[str]) -> str:
+            normalized = _normalize_tappable_telegram_command_line(match.group(1))
+            return normalized if normalized is not None else match.group(0)
+
+        return _TELEGRAM_INLINE_CODE_RE.sub(_replace_inline, segment)
+
+    def _unwrap_fenced(block: str) -> Optional[str]:
+        inner = block[3:-3]
+        body = inner.split("\n", 1)[1] if "\n" in inner else inner
+        if not body.strip():
+            return None
+        out_lines: list[str] = []
+        saw_command = False
+        for line in body.splitlines():
+            normalized = _normalize_tappable_telegram_command_line(line)
+            if normalized is None:
+                return None
+            if normalized:
+                saw_command = True
+            out_lines.append(normalized)
+        if not saw_command:
+            return None
+        return "\n".join(out_lines)
+
+    out: list[str] = []
+    pos = 0
+    for match in _TELEGRAM_FENCED_CODE_RE.finditer(text):
+        out.append(_unwrap_inline(text[pos:match.start()]))
+        unwrapped = _unwrap_fenced(match.group(0))
+        out.append(unwrapped if unwrapped is not None else match.group(0))
+        pos = match.end()
+    out.append(_unwrap_inline(text[pos:]))
+    return "".join(out)
 
 
 def _utf16_length(text: str) -> int:

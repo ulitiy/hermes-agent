@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import re
 from functools import partial
 from pathlib import Path
@@ -17,8 +18,10 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
-from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service
 from gateway.wake import session_owned_by_profile
+
+logger = logging.getLogger("gateway.run")
 
 
 def _kbc():
@@ -725,14 +728,16 @@ class _KanbanNotification:
                     event_payload=getattr(ev, "payload", None), task=self.task,
                 )
             except Exception as art_exc:
-                logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+                logger.warning("kanban notifier: artifact delivery for %s failed", self.task_id,
+                               exc_info=(RuntimeError, RuntimeError(type(art_exc).__name__), art_exc.__traceback__))
         if ev.kind == "completed":
             try:
                 await self.runner._offer_post_task_new_button_for_kanban_completion(
                     adapter=adapter, platform=self.plat, sub=sub, msg=msg,
                 )
-            except Exception:
-                logger.debug("kanban notifier: New affordance failed for %s", self.task_id, exc_info=True)
+            except Exception as exc:
+                logger.exception("kanban notifier: New affordance failed for %s", self.task_id,
+                                 exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
         return True
 
     async def _send_pings(self) -> bool:

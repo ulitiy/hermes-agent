@@ -638,7 +638,7 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # the file follows the default. It is not rewritten to the new image, because a written image
     # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
     # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    from hermes_constants import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
     for legacy in LEGACY_SANDBOX_IMAGES:
         for key, old in (
             ("docker_image", legacy),
@@ -669,7 +669,7 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
     # not a choice, so both are dropped and fresh sandboxes follow terminal.vercel_image. A runtime
     # the user chose (node22, python3.13) stays and keeps overriding the image, as before. Persisted
     # sandboxes are unaffected either way: a snapshot restore never sends a runtime or an image.
-    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    from hermes_constants import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
     _rewrite_stale_default(
         section="terminal", key="vercel_runtime", old=LEGACY_VERCEL_RUNTIME, new=None,
         added=f"terminal.vercel_runtime unset (fresh sandboxes use terminal.vercel_image, {DEFAULT_VERCEL_IMAGE})",

@@ -1,6 +1,25 @@
 """Keep persistent OAuth authentication failures from silently becoming paid usage."""
 
+import logging
+
 from agent.error_classifier import FailoverReason
+
+
+def _fallback_entry_unavailable_without_network(agent, fb: dict) -> str | None:
+    """Skip fallback routes that have no local auth, without making a network probe."""
+    if (fb.get("provider") or "").strip().lower() != "nous":
+        return None
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        state = get_provider_auth_state("nous") or {}
+    except Exception as exc:
+        logging.getLogger(__name__).exception(
+            "Fallback auth state unreadable",
+            exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__),
+        )
+        return f"nous_auth_unreadable:{type(exc).__name__}"
+    has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
+    return None if has_token else "nous_token_missing"
 
 
 def _should_block_paid_oauth_auth_fallback(

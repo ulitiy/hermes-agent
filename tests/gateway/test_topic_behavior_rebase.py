@@ -4,6 +4,16 @@ import os
 from pathlib import Path
 
 import yaml
+import pytest
+
+
+@pytest.mark.parametrize("text", ["\ufeff  Role\n", "  Role\n", "\ufeff  \n"])
+def test_profile_soul_accepts_bom_without_leaking_it_into_prompt(tmp_path, monkeypatch, text):
+    from gateway.run_topic_behavior import GatewayTopicBehaviorMixin
+
+    monkeypatch.setattr(GatewayTopicBehaviorMixin, "_profile_dir", staticmethod(lambda _: tmp_path))
+    (tmp_path / "SOUL.md").write_text(text, encoding="utf-8")
+    assert GatewayTopicBehaviorMixin._load_profile_soul("role") == (text.lstrip("\ufeff").strip() or None)
 
 
 def test_topic_overlay_follows_scoped_home_without_moving_transport(tmp_path, monkeypatch):

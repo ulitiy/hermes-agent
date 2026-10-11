@@ -46,6 +46,55 @@ def _source_mapping_entries(source: SessionSource, names: tuple[str, ...]):
                     yield platform_key, name, key, mapping[key]
 
 
+def build_turn_ephemeral_prompt(runner, ctx) -> str:
+    """Platform context, channel prompt, configured ephemeral prompt, then active role."""
+    combined = ctx.context_prompt or ""
+    for extra in (
+        (ctx.channel_prompt or "").strip(),
+        runner._get_system_prompt_for_channel(
+            ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
+            parent_id=getattr(ctx.source, "parent_chat_id", None),
+        ),
+    ):
+        if extra:
+            combined = (combined + "\n\n" + extra).strip()
+    profile_name = runner._load_source_profile(ctx.source)
+    if profile_name:
+        soul = runner._load_profile_soul(profile_name)
+        if soul:
+            combined = (combined + f"\n\n## Active role profile: {profile_name}\n\n{soul}").strip()
+    return combined
+
+
+def apply_profile_channel_runtime(runner, source, model, runtime_kwargs):
+    """Topic role then channel overlay, only when no session override is active."""
+    from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
+
+    profile_name = runner._load_source_profile(source) if source is not None else None
+    if profile_name:
+        profile_model, profile_runtime = runner._load_profile_model_runtime_config(profile_name)
+        if profile_model:
+            model = profile_model
+        if profile_runtime:
+            runtime_kwargs = profile_runtime
+    cfg = getattr(runner, "config", None)
+    if cfg and source is not None:
+        channel = _get_channel_override(
+            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+        )
+        if channel:
+            if channel.model:
+                model = channel.model
+            if channel.provider:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(channel.provider, target_model=model or None)
+                runtime_model = runtime_kwargs.pop("model", None)
+                if runtime_model and not channel.model:
+                    model = runtime_model
+    return model, runtime_kwargs
+
+
 class GatewayTopicBehaviorMixin:
     """Legacy topic controls, using upstream's call-time, profile-scoped loaders."""
 
@@ -131,7 +180,7 @@ class GatewayTopicBehaviorMixin:
         if pdir is None:
             return None
         try:
-            return (pdir / "SOUL.md").read_text(encoding="utf-8").strip() or None
+            return (pdir / "SOUL.md").read_text(encoding="utf-8-sig").strip() or None
         except (OSError, UnicodeError):
             logger.debug("Could not read profile SOUL from %s", pdir, exc_info=True)
             return None

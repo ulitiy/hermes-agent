@@ -179,9 +179,10 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         Priority (highest first): session ``/model`` → ``channel_overrides`` → topic role → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
+            _credential_pool_for_provider, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
+        from gateway.run_topic_behavior import apply_profile_channel_runtime
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -247,30 +248,8 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
-        profile_name = self._load_source_profile(source) if source is not None else None
-        if profile_name and not override:  # Never replace a recovered session provider's credentials.
-            profile_model, profile_runtime = self._load_profile_model_runtime_config(profile_name)
-            if profile_model:
-                model = profile_model
-            if profile_runtime:
-                runtime_kwargs = profile_runtime
-
-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None and not override:
-            ch = _get_channel_override(
-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+        if not override:  # Never replace a recovered session provider's credentials.
+            model, runtime_kwargs = apply_profile_channel_runtime(self, source, model, runtime_kwargs)
 
         if unavailable_override and not self._pre_agent_fallback_notice:
             from hermes_cli.fallback_config import pre_agent_fallback_notice
@@ -354,42 +333,6 @@ class GatewayTurnMixin(GatewayNewSessionMixin):
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
-        """Persist the runtime model/provider a gateway turn actually used (provider fallback can
-        switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
-        uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
-        if not session_id or agent is None or self._session_db is None:
-            return
-        model = getattr(agent, "model", None)
-        if not model:
-            return
-        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
-        runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
-        runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
-        try:
-            db = self._session_db._db
-            row = db.get_session(session_id)
-            if not row:
-                return
-            # Legacy backfill: canonical Bot Chats created BEFORE the follow_profile_config contract existed
-            # carry no marker, yet they are still the plugin-owned forever-DM. The plugin's own identity
-            # rule is "the profile's session titled exactly 'Bot Chat'" (UNIQUE(title) makes that an exact
-            # registry, and pre-policy rows may be visible OR hidden), so mirror that rule here. Without
-            # this, every Bot Chat that already exists in the field stays pinned to its stale stored
-            # provider until the user deletes it — the exact live-report shape (#89497 / #94818).
-            raw_config = row.get("model_config")
-            config = {}
-            with suppress(Exception):
-                config = json.loads(raw_config) if raw_config else {}
-            if not isinstance(config, dict):
-                config = {}
-            gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
-                return
-            config["gateway_runtime"] = runtime
-            db.update_session_meta(session_id, json.dumps(config), model=model)
-        except Exception:
-            logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""

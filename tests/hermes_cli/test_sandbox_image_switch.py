@@ -119,7 +119,7 @@ def _fake_docker(tmp_path, monkeypatch, ps_output: str) -> Path:
 
 def test_pending_needs_docker_backend_unpinned_and_a_stale_container(home, tmp_path, monkeypatch):
     from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_constants import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\nhermes-def\t{DEFAULT_SANDBOX_IMAGE}\n")
 
@@ -140,7 +140,7 @@ def test_pending_needs_docker_backend_unpinned_and_a_stale_container(home, tmp_p
 
 def test_decide_pins_and_either_answer_ends_the_offer(home, tmp_path, monkeypatch):
     from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_constants import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     _write(home, {"backend": "docker"})
@@ -171,7 +171,7 @@ def test_decide_pins_and_either_answer_ends_the_offer(home, tmp_path, monkeypatc
 
 def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatch):
     from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_constants import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     monkeypatch.setattr("tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: None)
@@ -190,7 +190,7 @@ def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatc
 
 def test_pending_reads_a_bound_terminal_scope_not_the_launch_env(home, tmp_path, monkeypatch):
     from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import LEGACY_SANDBOX_IMAGE
+    from hermes_constants import LEGACY_SANDBOX_IMAGE
     from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
