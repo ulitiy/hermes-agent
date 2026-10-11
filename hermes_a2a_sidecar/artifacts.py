@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from a2a.types import Message
 
 from .config import PeerPolicy
 
+logger = logging.getLogger(__name__)
 _SCRIPT_EXTENSIONS = {
     ".bash",
     ".bat",
@@ -83,7 +85,8 @@ def _metadata_dict(obj: Any) -> dict[str, Any]:
         return {}
     try:
         return json_format.MessageToDict(obj)
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as exc:
+        logger.warning("Invalid A2A metadata (%s)", type(exc).__name__)
         return {}
 
 
@@ -160,10 +163,7 @@ def _safe_filename(artifact: RemoteArtifact, index: int) -> str:
 def _scan_bytes(data: bytes) -> list[str]:
     findings: list[str] = []
     sample = data[:1_000_000]
-    try:
-        text = sample.decode("utf-8", errors="ignore")
-    except Exception:
-        return findings
+    text = sample.decode("utf-8", errors="ignore")
     for pattern in _DANGEROUS_PATTERNS:
         if pattern.search(text):
             findings.append(f"matched pattern {pattern.pattern}")
@@ -245,6 +245,8 @@ def stage_artifacts(
                 )
             )
         except Exception as exc:
+            logger.warning("A2A artifact staging failed",
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
             staged.append(StagedArtifact(artifact=artifact, status="error", error=str(exc)))
     return staged
 

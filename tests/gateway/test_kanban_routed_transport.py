@@ -4,6 +4,7 @@ from pathlib import Path
 
 from gateway.config import GatewayConfig, Platform
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.profile_routing import parse_profile_routes
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
@@ -11,6 +12,7 @@ from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_noti
 
 class RecordingAdapter:
     supports_async_delivery = True
+    extract_local_files = staticmethod(BasePlatformAdapter.extract_local_files)
 
     def __init__(self):
         self.sent = []

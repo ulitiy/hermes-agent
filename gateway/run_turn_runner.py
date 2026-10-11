@@ -1162,29 +1162,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return compacted_in_place, agent_session_id, offset
 
     def _combined_ephemeral_prompt(self) -> str:
-        """Platform context + YAML channel_prompts hint + channel_overrides system_prompt (or global
-        ephemeral) + the gateway ephemeral prompt."""
-        ctx = self._ctx
-        from gateway.session_api_turn import api_execution
-        api = api_execution.get()
-        if api is not None:
-            return api['settings'].get('ephemeral_system_prompt') or ''
-        combined = ctx.context_prompt or ""
-        for extra in (
-            (ctx.channel_prompt or "").strip(),
-            self._runner._get_system_prompt_for_channel(
-                ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
-                parent_id=getattr(ctx.source, "parent_chat_id", None),
-            ),
-        ):
-            if extra:
-                combined = (combined + "\n\n" + extra).strip()
-        profile_name = self._runner._load_source_profile(ctx.source)
-        if profile_name:
-            soul = self._runner._load_profile_soul(profile_name)
-            if soul:
-                combined = (combined + f"\n\n## Active role profile: {profile_name}\n\n{soul}").strip()
-        return combined
+        """Compose topic behavior without bypassing API/session execution policy."""
+        from gateway.run_topic_behavior import build_turn_ephemeral_prompt
+        return build_turn_ephemeral_prompt(self._runner, self._ctx)
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:
         """Append MEDIA:<path> tags from tool results (e.g. TTS) that the model's final text omits, so

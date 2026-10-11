@@ -33,6 +33,17 @@ _ticked_stores: dict[str, str] = {}
 _ticked_lock = threading.Lock()
 
 
+def profile_tick_gate(can_dispatch, profile_gate, name, home):
+    """Recheck admission under the tick lock, not just during enumeration.
+
+    Capture this profile rather than a ticker loop variable. No profile gate
+    means retaining the caller's original gate, including ``None``.
+    """
+    if profile_gate is None:
+        return can_dispatch
+    return lambda: (can_dispatch is None or can_dispatch()) and profile_gate(name, home)
+
+
 def register_ticked_homes(homes) -> None:
     """Publish the set of profile homes this process's cron ticker owns this cycle.
 

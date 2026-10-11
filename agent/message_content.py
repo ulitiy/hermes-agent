@@ -41,3 +41,19 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
         return str(content)
     except Exception:
         return ""
+
+
+def compression_message_text(message: Any) -> str:
+    """Compaction's legacy extraction: retain empty dict parts and ignore non-dict parts.
+
+    Deliberately stricter than flatten_message_text; anchor comparisons depend on
+    these exact separators and coercions for transcripts already on disk.
+    """
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict)
+        )
+    return ""

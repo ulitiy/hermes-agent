@@ -13,6 +13,15 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _restart_notification_pending() -> bool:
+    """Include a claimed marker: an interrupted delivery is still pending."""
+    from gateway.run import _hermes_home
+
+    return any((_hermes_home / name).exists() for name in (
+        ".restart_notify.json", ".restart_notify.claimed.json",
+    ))
+
+
 class GatewayRestartNotificationMixin:
     def _schedule_restart_notification_watch(self) -> None:
         existing = getattr(self, "_restart_notification_task", None)
@@ -117,7 +126,8 @@ class GatewayRestartNotificationMixin:
                 )
             except Exception as exc:
                 cleanup = False
-                logger.warning("Restart notification to %s:%s raised; deferred for retry: %s", platform_str, chat_id, exc)
+                logger.warning("Restart notification to %s:%s raised; deferred for retry", platform_str, chat_id,
+                               exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
                 return None
 
             if _send_failed(result):
@@ -134,7 +144,8 @@ class GatewayRestartNotificationMixin:
             cleanup = False
             raise
         except Exception as exc:
-            logger.warning("Restart notification failed: %s", exc)
+            logger.warning("Restart notification failed",
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
             return None
         finally:
             if cleanup:

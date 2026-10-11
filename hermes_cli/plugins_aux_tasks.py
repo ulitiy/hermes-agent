@@ -8,6 +8,14 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("hermes_cli.plugins")
 
 
+def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
+    """Registered auxiliary tasks sorted by key after idempotent discovery."""
+    from hermes_cli.plugins import _ensure_plugins_discovered
+
+    manager = _ensure_plugins_discovered()
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
 def build_auxiliary_task_entry(
     me: str, owner_id: str, key: str, *, display_name: str, description: str,
     defaults: Optional[dict[str, Any]], inherit_from: Optional[str], registered: dict[str, dict[str, Any]],

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gateway.reaction_review import build_digest, open_session_db, DEFAULT_SINCE_DAYS
 
+logger = logging.getLogger(__name__)
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -71,7 +73,8 @@ def main(argv=None) -> int:
     try:
         db = open_session_db(args.db)
     except Exception as exc:  # pragma: no cover - environment dependent
-        print(f"reaction_digest: could not open state.db: {exc}", file=sys.stderr)
+        logger.error("reaction_digest: could not open state.db",
+                     exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
         return 1
 
     try:
@@ -84,8 +87,9 @@ def main(argv=None) -> int:
     finally:
         try:
             db.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("reaction_digest: could not close state.db",
+                         exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
 
     if args.quiet_empty and digest.get("empty"):
         return 0

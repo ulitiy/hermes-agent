@@ -550,7 +550,7 @@ class InProcessCronScheduler(CronScheduler):
             SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
-        from cron.scheduler_ownership import register_ticked_homes
+        from cron.scheduler_ownership import profile_tick_gate, register_ticked_homes
         from cron.dispatch_hold import note_dispatching, note_held_profiles
 
         initial_homes = _existing_profile_homes(profile_homes)
@@ -629,18 +629,10 @@ class InProcessCronScheduler(CronScheduler):
                         try:
                             with _profile_cron_scope(home):
                                 note_dispatching()
-                                # Enumeration is not admission: a gateway can return before
-                                # tick acquires its lock. Recheck this profile there as well.
-                                tick_gate = can_dispatch
-                                if profile_gate is not None:
-                                    tick_gate = lambda name=_pname, path=home: (
-                                        (can_dispatch is None or can_dispatch())
-                                        and profile_gate(name, path)
-                                    )
-
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
-                                    sync=False, can_dispatch=tick_gate,
+                                    sync=False,
+                                    can_dispatch=profile_tick_gate(can_dispatch, profile_gate, _pname, home),
                                 )
                         except CronTickYielded as e:
                             # Yield for THIS profile only; one fresh gateway must not stop others.

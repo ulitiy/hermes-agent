@@ -79,3 +79,36 @@ async def test_injection_endpoint_is_scoped_authenticated_and_closes(tmp_path, m
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
         await adapter._start_injection_server()
         assert adapter._injection_runner is None
+
+
+@pytest.mark.asyncio
+async def test_injection_dispatch_is_owned_until_disconnect(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("HERMES_TELEGRAM_INJECT_SECRET", "test-inject")
+    monkeypatch.setenv("HERMES_TELEGRAM_INJECT_PORT", "0")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def delayed(event):
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    adapter.handle_message = delayed
+    try:
+        await adapter._start_injection_server()
+        address, = adapter._injection_runner.addresses
+        async with aiohttp.ClientSession() as client:
+            async with client.post(f"http://127.0.0.1:{address[1]}/inject",
+                                   headers={"X-Inject-Secret": "test-inject"},
+                                   json={"chat_id": "c", "text": "x"}) as response:
+                assert response.status == 200
+        await asyncio.wait_for(entered.wait(), 2)
+        await adapter.disconnect()
+        assert cancelled.is_set(), "disconnect left the accepted injection dispatch running"
+    finally:
+        await adapter.disconnect()

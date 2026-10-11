@@ -27,8 +27,11 @@ class TelegramNewSessionMixin:
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as exc:
-            logger.warning("[%s] send_new_session_button failed: %s", self.name, exc)
-            return SendResult(success=False, error=str(exc))
+            from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+            error = _redact_telegram_error_text(exc)
+            logger.warning("[%s] send_new_session_button failed: %s", self.name, error,
+                           exc_info=(RuntimeError, RuntimeError(type(exc).__name__), exc.__traceback__))
+            return SendResult(success=False, error=error)
 
     def _source_from_callback_query(self, query):
         message, caller = query.message, query.from_user
