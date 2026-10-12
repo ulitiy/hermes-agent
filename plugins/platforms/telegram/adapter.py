@@ -3698,7 +3698,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_location_message
             ))
             self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
             # Handle inline keyboard button callbacks (update prompts)
@@ -8246,7 +8246,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return MessageType.STICKER
         if msg.photo:
             return MessageType.PHOTO
-        if msg.video:
+        if msg.video or getattr(msg, "video_note", None):
             return MessageType.VIDEO
         if msg.audio:
             return MessageType.AUDIO
@@ -8290,6 +8290,9 @@ class TelegramAdapter(BasePlatformAdapter):
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
+            event.text = self._append_observed_note(
+                event.text, "[Observed Telegram attachment could not be downloaded or cached.]"
+            )
             return
 
         if cached is None:
@@ -8338,6 +8341,9 @@ class TelegramAdapter(BasePlatformAdapter):
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache replied-to media: %s", exc, exc_info=True)
+            event.text = self._append_observed_note(
+                event.text, "[Replied-to Telegram attachment could not be downloaded or cached.]"
+            )
             return
 
         if cached is None:
@@ -8362,6 +8368,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return msg.photo[-1], "", "", "image"
         if msg.video:
             return msg.video, "", "video/mp4", "video"
+        if getattr(msg, "video_note", None):
+            return msg.video_note, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -8965,15 +8973,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "audio file", e)
 
-        elif msg.video:
+        elif msg.video or getattr(msg, "video_note", None):
+            # Round video notes are video attachments, not voice/STT input.
+            video = msg.video or msg.video_note
             try:
-                allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
+                allowed, note = self._telegram_media_size_allowed(video, "video file")
                 if not allowed:
                     event.text = self._append_observed_note(event.text, note or "")
-                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
+                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(video, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.video.get_file()
+                file_obj = await video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"
                 if getattr(file_obj, "file_path", None):

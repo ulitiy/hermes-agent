@@ -8,6 +8,14 @@ description: "Set up Hermes Agent as a Telegram bot"
 
 Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
 
+Round video messages (`video_note`, including forwarded circles) are received as
+video attachments, not voice memos. Hermes caches the video and makes its path
+available to the agent; intake does not automatically transcribe or analyze it.
+Ask explicitly when you want transcription or video processing. Text replies to
+circles can also make the original attachment available, subject to the existing
+media limits and group access/mention rules. Passive group observation, when
+enabled, caches circles without starting an agent turn.
+
 ## Step 1: Create a Bot via BotFather
 
 Every Telegram bot requires an API token issued by [@BotFather](https://t.me/BotFather), Telegram's official bot management tool.
