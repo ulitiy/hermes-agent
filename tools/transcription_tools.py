@@ -1749,7 +1749,41 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         }
 
     provider = _get_provider(stt_config)
+    result = _transcribe_with_provider(file_path, provider, stt_config, model)
+    if result.get("success"):
+        return result
 
+    # Cross-provider uploads/spend require an explicit opt-in. Never mutate the
+    # primary selection: each new recording tries it again first.
+    fallback = stt_config.get("fallback_provider")
+    if not isinstance(fallback, str):
+        return result
+    fallback = fallback.strip().lower()
+    primary = str(stt_config.get("provider") or provider).strip().lower()
+    if not fallback or fallback in {"none", primary, provider}:
+        return result
+
+    fallback_config = {**stt_config, "provider": fallback}
+    fallback_provider = _get_provider(fallback_config)
+    # The primary's model override must not leak into a different engine.
+    backup = _transcribe_with_provider(file_path, fallback_provider, fallback_config)
+    notice = stt_config.get("fallback_notice")
+    if not isinstance(notice, str) or not notice.strip():
+        notice = f"⚠️ Speech recognition fallback: {primary} → {fallback}."
+    backup = {**backup, "fallback_from": primary, "fallback_notice": notice}
+    if not backup.get("success"):
+        backup["error"] = (
+            f"Primary {primary}: {result.get('error', 'transcription failed')}; "
+            f"fallback {fallback}: {backup.get('error', 'transcription failed')}"
+        )
+    logger.info("STT fallback %s -> %s: success=%s", primary, fallback, backup.get("success"))
+    return backup
+
+
+def _transcribe_with_provider(
+    file_path: str, provider: str, stt_config: dict, model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Dispatch exactly one provider; fallback policy belongs to the caller."""
     if provider == "local":
         local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_model(

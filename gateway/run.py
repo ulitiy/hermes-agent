@@ -11267,6 +11267,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                     return_transcripts=True,
+                    source=source,
                 )
                 # Echo successful transcripts back before the agent loop so users
                 # can verify STT quality. The LLM still receives the transcript
@@ -16222,6 +16223,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_paths: List[str],
         *,
         return_transcripts: bool = False,
+        source: Optional[SessionSource] = None,
     ) -> tuple[str, list[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -16269,6 +16271,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
+                # Transport status is not user speech and must not contaminate
+                # the model prompt or depend on the transcript-echo setting.
+                notice = result.get("fallback_notice")
+                if source is not None and notice:
+                    try:
+                        notice_adapter = self._adapter_for_source(source)
+                        if notice_adapter:
+                            await notice_adapter.send(
+                                source.chat_id,
+                                notice,
+                                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                            )
+                    except Exception as notice_exc:
+                        logger.warning("STT fallback notice failed (non-fatal): %s", notice_exc)
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)
@@ -16347,7 +16363,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if audio_paths:
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-                text, audio_paths,
+                text, audio_paths, source=event.source,
             )
             # Echo raw transcripts back to the user as a separate message so the
             # final agent reply can answer without repeating the transcript.
@@ -20462,7 +20478,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if _audio_paths:
                                     try:
                                         _enriched, _transcripts = await self._enrich_message_with_transcription(
-                                            pending_text, _audio_paths,
+                                            pending_text, _audio_paths, source=_peek_event.source,
                                         )
                                         pending_text = _enriched
                                         if _transcripts and self._should_send_stt_transcription_echo():
@@ -20884,7 +20900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _audio_paths:
                         try:
                             _enriched, _transcripts = await self._enrich_message_with_transcription(
-                                _pending_text, _audio_paths,
+                                _pending_text, _audio_paths, source=pending_event.source,
                             )
                             pending = _enriched or None
                             if _transcripts and self._should_send_stt_transcription_echo():

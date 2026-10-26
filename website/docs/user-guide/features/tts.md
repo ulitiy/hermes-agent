@@ -479,12 +479,31 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 ### Fallback Behavior
 
-If your configured provider isn't available, Hermes automatically falls back:
-- **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
-- **Groq key not set** → Falls back to local transcription, then OpenAI
-- **OpenAI key not set** → Falls back to local transcription, then Groq
-- **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
-- **Nothing available** → Voice messages pass through with an accurate note to the user
+An explicit `stt.provider` is authoritative: Hermes does not silently upload
+recordings to another cloud service. Provider auto-detection (when no provider is
+selected) and the local faster-whisper → local command fallback are separate
+from recovery after a provider error.
+
+To opt into one backup provider after a failed transcription, configure:
+
+```yaml
+stt:
+  provider: elevenlabs
+  fallback_provider: openai
+  openai:
+    model: whisper-1
+  # Optional localized notification; omit for a provider-labelled default.
+  fallback_notice: '⚠️ Speech recognition: ElevenLabs → OpenAI (backup).'
+```
+
+The backup needs its own configured credentials. On a primary failure (including
+rate limits, service errors, or timeouts), the same recording is tried once with
+the backup's own model. The gateway sends a separate fallback notice to the
+originating chat/topic, even if transcript echo is off; the notice is not added
+to the user's speech or the model prompt. If both providers fail, transcription
+remains failed rather than inventing text. Each new recording starts with the
+primary again. Invalid audio and disabled STT never trigger a backup upload.
+Remove `fallback_provider` or leave it empty to disable this opt-in recovery.
 
 ### STT custom command providers
 
