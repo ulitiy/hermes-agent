@@ -5799,6 +5799,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _busy_status_ping_reply(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        """A bare Telegram liveness ping observes the current run, never changes it."""
+        if (
+            event.source.platform != Platform.TELEGRAM
+            or event.message_type != MessageType.TEXT
+            or event.internal
+            or event.media_urls
+            or self._draining
+            or session_key not in self._running_agents
+        ):
+            return None
+        ping = (event.text or "").strip().casefold().rstrip("!? .…")
+        if ping not in {"эй", "ping"}:
+            return None
+        russian = ping == "эй"
+        agent = self._running_agents[session_key]
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return "⏳ Я здесь. Текущая задача запускается." if russian else "⏳ I'm here. The current task is starting."
+        from tools.approval import has_blocking_approval
+        if has_blocking_approval(session_key):
+            return "⏳ Я здесь. Жду подтверждения команды." if russian else "⏳ I'm here. Waiting for command approval."
+        from tools.clarify_gateway import get_pending_for_session
+        if get_pending_for_session(session_key, include_choice_prompts=True) is not None:
+            return "⏳ Я здесь. Жду ответа на вопрос выше." if russian else "⏳ I'm here. Waiting for your answer above."
+        message = (
+            "⏳ Я здесь. Текущая задача продолжается — не отменяю её."
+            if russian else "⏳ I'm here. The current task is still running — not cancelling it."
+        )
+        try:
+            tool = agent.get_activity_summary().get("current_tool")
+            if tool:
+                message += f"\n{'Сейчас' if russian else 'Current tool'}: {tool}"
+        except Exception:
+            pass  # Status is best effort; a missing summary must never trigger interrupt.
+        return message
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5939,6 +5975,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         running_agent = self._running_agents.get(session_key)
+
+        # Explicit liveness requests bypass follow-up mutation and the ordinary
+        # busy-ack mute/cooldown. Even a failed status delivery must not cancel work.
+        status_reply = self._busy_status_ping_reply(event, session_key)
+        if status_reply is not None:
+            anchor = self._reply_anchor_for_event(event)
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=status_reply,
+                    reply_to=anchor,
+                    metadata=self._thread_metadata_for_source(event.source, anchor),
+                )
+            except Exception:
+                logger.warning("Busy status ping delivery failed for %s", session_key, exc_info=True)
+            return True
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
@@ -9695,7 +9747,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             _pending_clarify = None
-        if _pending_clarify is not None and _clarify_mod is not None:
+        if _pending_clarify is not None and _clarify_mod is not None and not event.internal:
+            # Background completions are not human answers; a bare liveness
+            # ping reports the wait without consuming the pending question.
+            status_reply = self._busy_status_ping_reply(event, _quick_key)
+            if status_reply is not None:
+                return status_reply
             _raw_clarify_reply = (event.text or "").strip()
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
@@ -10094,6 +10151,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
+
+            status_reply = self._busy_status_ping_reply(event, _quick_key)
+            if status_reply is not None:
+                return status_reply
 
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
@@ -19666,43 +19727,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
-                send_ok = False
-                fut = safe_schedule_threadsafe(
-                    _status_adapter.send_clarify(
-                        chat_id=_status_chat_id,
-                        question=question,
-                        choices=list(choices) if choices else None,
-                        clarify_id=clarify_id,
-                        session_key=session_key or "",
-                        metadata=_status_thread_metadata,
-                    ),
-                    _loop_for_step,
-                    logger=logger,
-                    log_message="Clarify send failed to schedule",
-                )
-                if fut is None:
+                try:
                     send_ok = False
-                else:
-                    try:
-                        result = fut.result(timeout=15)
-                        send_ok = bool(getattr(result, "success", False))
-                    except Exception as exc:
-                        logger.warning("Clarify send failed: %s", exc)
-                        send_ok = False
+                    fut = safe_schedule_threadsafe(
+                        _status_adapter.send_clarify(
+                            chat_id=_status_chat_id,
+                            question=question,
+                            choices=list(choices) if choices else None,
+                            clarify_id=clarify_id,
+                            session_key=session_key or "",
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="Clarify send failed to schedule",
+                    )
+                    if fut is not None:
+                        try:
+                            result = fut.result(timeout=15)
+                            send_ok = bool(getattr(result, "success", False))
+                        except Exception as exc:
+                            logger.warning("Clarify send failed: %s", exc)
 
-                if not send_ok:
-                    # Couldn't deliver the prompt — clean up and return
-                    # sentinel so the agent can fall back to a sensible
-                    # default rather than hanging.
-                    _clarify_mod.clear_session(session_key or "")
-                    return "[clarify prompt could not be delivered]"
+                    if not send_ok:
+                        # Couldn't deliver the prompt — clean up and return
+                        # sentinel so the agent can fall back to a sensible
+                        # default rather than hanging.
+                        _clarify_mod.clear_session(session_key or "")
+                        return "[clarify prompt could not be delivered]"
 
-                timeout = _clarify_mod.get_clarify_timeout()
-                response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-                if response is None or response == "":
-                    # Timeout or session-boundary cancellation
-                    return f"[user did not respond within {int(timeout / 60)}m]"
-                return response
+                    timeout = _clarify_mod.get_clarify_timeout()
+                    response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                    if response is None or response == "":
+                        # Timeout or session-boundary cancellation
+                        return f"[user did not respond within {int(timeout / 60)}m]"
+                    return response
+                finally:
+                    # The waiter owns the pause, not a particular reply path:
+                    # buttons, typed answers, timeouts and failed sends all
+                    # return to the same running turn/typing refresh loop.
+                    if _run_still_current():
+                        try:
+                            _status_adapter.resume_typing_for_chat(_status_chat_id)
+                        except Exception:
+                            logger.debug("Clarify typing resume failed", exc_info=True)
 
             agent.clarify_callback = _clarify_callback_sync
 
