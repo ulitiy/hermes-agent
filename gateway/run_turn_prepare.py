@@ -285,9 +285,11 @@ class GatewayTurnPrepareMixin:
                 )
                 return
         else:
-            # Only an actual user turn may opt into local time/always reset policy.
+            # Authority-owned turns already chose their FIFO owner at admission. Re-applying
+            # "always" here would run a claimed turn in a different conversation (also local/API).
+            from gateway.session_ingress import executing_admission
             policy_kwargs = {}
-            if not getattr(event, "internal", False):
+            if not getattr(event, "internal", False) and not executing_admission.get():
                 policy = await asyncio.to_thread(self._load_new_session_policy, source)
                 if policy.mode != "none":
                     policy_kwargs["reset_policy"] = policy

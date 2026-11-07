@@ -222,7 +222,8 @@ async def fire_post_delivery(authority, admission_id):
     taken = _registry(authority, 'post_delivery').pop(admission_id, None)
     if taken is None:
         return
-    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    from gateway.platforms.session_progress import _split_post_delivery_entry
     from gateway.platforms.base_post_delivery import run_post_delivery_callback
     callback = _split_post_delivery_entry(taken[2])[1]
     with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
@@ -483,9 +484,11 @@ async def deliver_response(adapter, event, session_key, response):
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
         return True
+    results = []
+    if await adapter._consume_reaction_only_response(text, event, results.append):
+        return any(getattr(result, 'success', False) for result in results if result is not None)
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
-    results = []
     if extracted.text_content:
         await adapter._send_final_text(event, session_key, extracted.text_content,
                                        metadata, ttl > 0, ttl, results.append)

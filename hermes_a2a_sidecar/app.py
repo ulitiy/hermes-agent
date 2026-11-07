@@ -13,7 +13,7 @@ from .executor import HermesKanbanExecutor
 from .store import HermesKanbanTaskStore
 
 
-async def _healthz(_request):  # noqa: ANN001
+async def _healthz(_request):
     return JSONResponse({"ok": True, "service": "hermes-a2a-sidecar"})
 
 

@@ -2,7 +2,7 @@
 
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 class SessionReactionsMixin:
@@ -63,7 +63,7 @@ class SessionReactionsMixin:
                          (now - self._OUTBOUND_INDEX_MAX_AGE_SECONDS,))
         self._execute_write(_do)
 
-    def lookup_telegram_outbound_message(self, *, chat_id: str, message_id: str) -> Optional[Dict[str, Any]]:
+    def lookup_telegram_outbound_message(self, *, chat_id: str, message_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
             try:
                 row = self._conn.execute(
@@ -110,8 +110,8 @@ class SessionReactionsMixin:
 
     def list_telegram_reactions(
         self, *, since_ts: Optional[float] = None, only_unreviewed: bool = False,
-        actions: Optional[tuple] = ("add",), limit: int = 500,
-    ) -> List[Dict[str, Any]]:
+        actions: Optional[tuple[str, ...]] = ("add",), limit: int = 500,
+    ) -> list[dict[str, Any]]:
         clauses, params = [], []
         if since_ts is not None:
             clauses.append("created_at >= ?")
@@ -132,7 +132,7 @@ class SessionReactionsMixin:
                 return []
         return [dict(row) for row in rows]
 
-    def mark_telegram_reactions_reviewed(self, ids: List[int]) -> int:
+    def mark_telegram_reactions_reviewed(self, ids: list[int]) -> int:
         ids = [int(i) for i in (ids or [])]
         if not ids:
             return 0

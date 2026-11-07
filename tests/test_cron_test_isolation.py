@@ -40,7 +40,7 @@ def test_cron_collection_and_crud_preserve_operator_store(tmp_path, preset_home,
     )
     result = subprocess.run(
         [sys.executable, "-c", code, str(store), *args],
-        cwd=repo, env=env, text=True, capture_output=True, timeout=60,
+        cwd=repo, env=env, text=True, capture_output=True, timeout=60, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert store.read_text() == sentinel

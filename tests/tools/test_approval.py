@@ -59,6 +59,7 @@ class TestApprovalModeParsing:
 class TestAcpPermissionApproval:
     def test_gateway_queue_resolves_acp_permission_choice(self, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
         token = approval_context.set_current_session_key("s-acp")
         sent = []
 
@@ -90,6 +91,7 @@ class TestAcpPermissionApproval:
                 "pattern_key": "acp_permission:execute",
                 "pattern_keys": ["acp_permission:execute"],
                 "allow_permanent": False,
+                "timeout_s": 300,
             }
         ]
 

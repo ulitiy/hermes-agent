@@ -36,6 +36,7 @@ from agent.turn_failure_copy import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _is_codex_token_expired, _recover_stale_codex_reasoning
+from agent.turn_recovery_entitlement import try_refresh_nous_paid_entitlement_credentials
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
@@ -101,17 +102,6 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
         return None
     return max_dimension if 512 <= max_dimension <= 8000 else None
 
-
-def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
-    """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-
-        if get_nous_portal_account_info(force_fresh=True).paid_service_access is not True:
-            return False
-        return agent._try_refresh_nous_client_credentials(force=True)
-    except Exception:
-        return False
 
 
 def _repair_transport_credentials(agent: Any) -> bool:
@@ -691,7 +681,7 @@ def recover_after_classification(
         and not _retry.nous_paid_entitlement_refresh_attempted
     ):
         _retry.nous_paid_entitlement_refresh_attempted = True
-        if _try_refresh_nous_paid_entitlement_credentials(agent):
+        if try_refresh_nous_paid_entitlement_credentials(agent):
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 

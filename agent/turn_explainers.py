@@ -6,7 +6,7 @@ summarises why a turn ended without a final answer. Every method resolves throug
 import os
 import re
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.i18n import t
 from agent.tool_dispatch_helpers import (
@@ -192,7 +192,7 @@ class TurnExplainersMixin:
         )
 
     @classmethod
-    def _format_file_mutation_recovery_prompt(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+    def _format_file_mutation_recovery_prompt(cls, failed: dict[str, dict[str, Any]]) -> str:
         """Bounded recovery guidance for the turn-end verification gate."""
         if not failed:
             return ""

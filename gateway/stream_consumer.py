@@ -28,6 +28,7 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
+    is_intentional_silence_response,
     is_gateway_control_marker_response,
     is_partial_gateway_control_marker,
     ends_with_partial_silence_marker as _ends_with_partial_silence_marker,
@@ -710,8 +711,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _adopt_recovered_reply(self, final_raw: str) -> bool:
         """Reconcile a marker-followed reply against its own prior segment, not older commentary."""
         if (self._message_id or self._cumulative_transport() or self._last_segment_delivery is None
-                or not _is_intentional_silence_response(self._clean_for_display(self._accumulated))
-                or _is_intentional_silence_response(self._clean_for_display(final_raw))):
+                or not is_intentional_silence_response(self._clean_for_display(self._accumulated))
+                or is_intentional_silence_response(self._clean_for_display(final_raw))):
             return False
         message_id, created_ts, prior_text, prior_ids = self._last_segment_delivery
         if len(prior_ids) == 1 and self._display_payload(prior_text) == self._display_payload(final_raw):

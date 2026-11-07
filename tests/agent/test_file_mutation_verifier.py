@@ -345,7 +345,7 @@ class TestAutoRecoveryEnabled:
     def test_default_is_enabled(self, monkeypatch):
         monkeypatch.delenv("HERMES_FILE_MUTATION_AUTO_RECOVERY", raising=False)
         import hermes_cli.config as _cfg_mod
-        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+        monkeypatch.setattr(_cfg_mod, "load_config", dict)
         agent = _bare_agent()
         assert agent._file_mutation_auto_recovery_enabled() is True
 

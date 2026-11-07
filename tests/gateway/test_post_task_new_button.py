@@ -31,7 +31,7 @@ class FakeTelegramAdapter:
 def _runner_with(config: dict, adapter: FakeTelegramAdapter | None = None):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._load_new_session_policy = lambda source: NewSessionPolicy.from_config(config, source.behavior_profile or source.profile)
-    setattr(runner, "adapters", {Platform.TELEGRAM: adapter or FakeTelegramAdapter()})
+    runner.adapters = {Platform.TELEGRAM: adapter or FakeTelegramAdapter()}
     return runner
 
 

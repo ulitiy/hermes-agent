@@ -273,11 +273,12 @@ class SessionAuthority:
     def register(self, source):
         return self._publish_route(source, *self._reserve_route(source))
 
-    def _reserve_route(self, source):
+    def _reserve_route(self, source, *, reset_policy=None):
         """The durable half of ``register`` (routing entry + reserved row): thread-safe, so async
         callers run it off the owner loop and publish the live entry on the loop."""
         self._require_admission_open()
-        entry = self.runner.session_store.get_or_create_session(source)
+        kwargs = {'reset_policy': reset_policy} if reset_policy is not None else {}
+        entry = self.runner.session_store.get_or_create_session(source, **kwargs)
         sid = self.logical_owner(entry.session_id)
         # SessionStore reserves routing metadata before the first AIAgent exists.
         if self.db.get_session(sid) is None:
@@ -583,12 +584,14 @@ class SessionAuthority:
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
         from gateway.session_runtime_workers import tracked_write
-        ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
         if revision := payload['native_text_v1']['event'].get('edit_revision'):
             request_id += ':edit:' + revision  # an edit is its own input, not a changed replay of the send
+        from gateway.run_new_session import reserve_native_route
+        ref = self._publish_route(source, *await reserve_native_route(
+            self, source, principal_id='messaging:' + identity, request_id=request_id, fence=fence))
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
         # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
         from gateway import session_retry_admission

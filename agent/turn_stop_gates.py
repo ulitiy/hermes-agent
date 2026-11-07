@@ -6,8 +6,9 @@ turn's edits (a durable row, see ``_late_lsp_verdicts``), verify-on-stop (#65919
 the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
-this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
-module level (cycle).
+this gate from error exits (#61631). Failed-file recovery rejects the candidate instead:
+its nudge stays synthetic, while simultaneous LSP diagnostics get their own durable pair.
+Nothing here imports ``agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
@@ -127,6 +128,26 @@ def _late_lsp_verdicts(agent) -> Optional[str]:
             + body)
 
 
+def _persist_recovery_lsp_verdicts(agent, messages, conversation_history) -> None:
+    """Keep late diagnostics durable without making a rejected answer their anchor.
+
+    The neutral assistant/user pair survives removal of the separate recovery
+    scaffolding, preserving alternation and every already-sent prefix byte.
+    """
+    note = _late_lsp_verdicts(agent)
+    if not note:
+        return
+    agent._lsp_turn_end_notes = getattr(agent, "_lsp_turn_end_notes", 0) + 1
+    append_message(messages, {
+        "role": "assistant", "content": "A file edit failed; the final answer was withheld for recovery.",
+        "display_kind": "hidden", "finish_reason": "verification_required",
+    })
+    append_message(messages, {"role": "user", "content": note})
+    agent._session_messages = messages
+    # Do not wait for another model/tool call: the API cap may already be spent.
+    agent._flush_messages_to_session_db(messages, conversation_history)
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919). A held turn's answer (typed hidden) is not shown
@@ -146,10 +167,11 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
-    there)."""
+    """Run failed-file recovery → late LSP → verify-on-stop → pre_verify → kanban.
+
+    User-role notes always follow an assistant row. Recovery keeps its ephemeral
+    nudge separate from durable diagnostics. Hook lookups remain lazy.
+    """
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
@@ -168,6 +190,25 @@ def apply_stop_gates(
             ),
         )
 
+    # Reject before verification can publish/retain the candidate, even with no
+    # budget left. The finalizer must summarize the failure instead of reusing it.
+    recovery = _file_mutation_recovery_nudge(agent)
+    if recovery:
+        agent._file_mutation_recovery_attempts = 1
+        _persist_recovery_lsp_verdicts(agent, messages, conversation_history)
+        # Fresh scaffolding, not a copy: rejected text/reasoning/provider carriers
+        # must not reach even the budget-summary request.
+        append_message(messages, {
+            "role": "assistant", "content": "The attempted file edit needs recovery.",
+            "_file_mutation_recovery_synthetic": True,
+        })
+        verdict = _continue(recovery, "_file_mutation_recovery_synthetic")
+        # Unlike an unverified report, this answer has a known failed edit.
+        # Budget exhaustion must summarize the failure, not resurrect that claim.
+        verdict.pending_verification_response = None
+        verdict.pending_verification_response_previewed = False
+        return verdict
+
     _lsp_note = _late_lsp_verdicts(agent)
     if _lsp_note:
         agent._lsp_turn_end_notes = getattr(agent, "_lsp_turn_end_notes", 0) + 1  # int: checked above
@@ -184,20 +225,6 @@ def apply_stop_gates(
             pending_verification_response=final_response,
             pending_verification_response_previewed=agent._interim_content_was_streamed(final_response or ""),
         )
-
-    # Use the existing stop-gate continuation mechanism instead of resurrecting
-    # the former monolithic conversation loop. Do not emit the premature answer.
-    recovery = _file_mutation_recovery_nudge(agent)
-    if recovery and agent.iteration_budget.remaining > 0:
-        agent._file_mutation_recovery_attempts = 1
-        final_msg["_file_mutation_recovery_synthetic"] = True
-        append_message(messages, final_msg)
-        verdict = _continue(recovery, "_file_mutation_recovery_synthetic")
-        # Unlike an unverified report, this answer has a known failed edit.
-        # Budget exhaustion must summarize the failure, not resurrect that claim.
-        verdict.pending_verification_response = None
-        verdict.pending_verification_response_previewed = False
-        return verdict
 
 
     _verify_nudge = _verify_on_stop_nudge(agent)

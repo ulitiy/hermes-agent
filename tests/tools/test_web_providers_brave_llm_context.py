@@ -229,7 +229,7 @@ class TestBraveLLMContextBackendWiring:
     def test_brave_free_still_wins_auto_detect_with_shared_key(self, monkeypatch):
         from tools import web_tools
 
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in (
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",

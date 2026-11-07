@@ -19,7 +19,7 @@ and no raw Telegram payloads are stored or rendered.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 
 # Sentiment buckets for the common Telegram reaction set. The mapping is
@@ -58,7 +58,7 @@ def classify_emoji(emoji: str) -> str:
     return "other"
 
 
-def _snippet_or_placeholder(row: Dict[str, Any]) -> str:
+def _snippet_or_placeholder(row: dict[str, Any]) -> str:
     snip = (row.get("snippet") or "").strip()
     if snip:
         return snip
@@ -73,7 +73,7 @@ def collect_reactions(
     since_days: int = DEFAULT_SINCE_DAYS,
     only_unreviewed: bool = True,
     limit: int = 500,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Read 'add' reaction events from the SessionDB for the review window."""
     since_ts = time.time() - max(since_days, 0) * 24 * 3600 if since_days else None
     return db.list_telegram_reactions(
@@ -92,7 +92,7 @@ def build_digest(
     mark_reviewed: bool = False,
     max_items_per_bucket: int = 8,
     limit: int = 500,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a structured + rendered weekly reaction digest.
 
     Returns a dict with:
@@ -109,8 +109,8 @@ def build_digest(
         db, since_days=since_days, only_unreviewed=only_unreviewed, limit=limit
     )
 
-    counts: Dict[str, int] = {}
-    buckets: Dict[str, List[Dict[str, Any]]] = {
+    counts: dict[str, int] = {}
+    buckets: dict[str, list[dict[str, Any]]] = {
         "negative": [], "positive": [], "neutral": [], "other": [],
     }
     for r in rows:
@@ -131,7 +131,7 @@ def build_digest(
             }
         )
 
-    followups: List[str] = []
+    followups: list[str] = []
     # Surface negatives first (highest learning value), then neutral, positive.
     for sentiment in ("negative", "neutral", "positive", "other"):
         items = buckets[sentiment][:max_items_per_bucket]
@@ -144,7 +144,7 @@ def build_digest(
                 f'You put {item["emoji"]} on: "{snippet}" — {question}'
             )
 
-    reviewed_ids: List[int] = []
+    reviewed_ids: list[int] = []
     if mark_reviewed and rows:
         ids = [r["id"] for r in rows if r.get("id") is not None]
         db.mark_telegram_reactions_reviewed(ids)
@@ -173,8 +173,8 @@ def build_digest(
 def render_digest_text(
     *,
     total: int,
-    counts: Dict[str, int],
-    buckets: Dict[str, List[Dict[str, Any]]],
+    counts: dict[str, int],
+    buckets: dict[str, list[dict[str, Any]]],
     since_days: int,
     max_items_per_bucket: int = 8,
 ) -> str:
@@ -189,7 +189,7 @@ def render_digest_text(
     freq = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     freq_line = "  ".join(f"{emoji}×{n}" for emoji, n in freq)
 
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append(f"🗳 Weekly reaction review — last {since_days} day(s)")
     lines.append(f"Total reactions: {total}")
     lines.append(f"Breakdown: {freq_line}")

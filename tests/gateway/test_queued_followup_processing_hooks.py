@@ -409,7 +409,10 @@ async def test_fifo_depth_limit_preserves_every_accepted_message(monkeypatch, tm
         await adapter.cancel_background_tasks()
 
     assert [message_id for message_id, _ in turns] == accepted_ids
-    assert model_calls == accepted_ids
+    for message, message_id in zip(model_calls, accepted_ids, strict=True):
+        if message != message_id:
+            assert message.startswith(f"[Telegram message id: `{message_id}`")
+            assert message.endswith(f"]\n\n{message_id}")
     cap = runner._MAX_INTERRUPT_DEPTH
     assert [depth for _, depth in turns] == [i % (cap + 1) for i in range(len(events))]
     assert outer_ids == accepted_ids[::cap + 1]

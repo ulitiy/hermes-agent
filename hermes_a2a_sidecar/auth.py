@@ -92,7 +92,7 @@ def authenticate_peer(request: Request, config: SidecarConfig) -> PeerPrincipal 
 class A2AAuthMiddleware(BaseHTTPMiddleware):
     """HTTP auth and payload-size gate for non-public A2A routes."""
 
-    def __init__(self, app, config: SidecarConfig):  # noqa: ANN001
+    def __init__(self, app, config: SidecarConfig):
         super().__init__(app)
         self.config = config
         rpc_path = config.rpc_path if config.rpc_path.startswith("/") else f"/{config.rpc_path}"
@@ -110,7 +110,7 @@ class A2AAuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path.rstrip("/") or "/"
         return path == self.rpc_path or path.startswith(f"{self.rpc_path}/")
 
-    async def dispatch(self, request: Request, call_next) -> Response:  # noqa: ANN001
+    async def dispatch(self, request: Request, call_next) -> Response:
         if self._is_public(request) or not self._needs_auth(request):
             return await call_next(request)
 

@@ -37,10 +37,10 @@ _SCRIPT_EXTENSIONS = {
 }
 _DANGEROUS_PATTERNS = [
     re.compile(r"rm\s+-rf\s+[/~$]"),
-    re.compile(r"curl\b.*\|\s*(?:sh|bash)", re.I | re.S),
-    re.compile(r"wget\b.*\|\s*(?:sh|bash)", re.I | re.S),
-    re.compile(r"base64\s+-d\b.*\|\s*(?:sh|bash|python)", re.I | re.S),
-    re.compile(r"(?:api[_-]?key|secret|token)\s*=", re.I),
+    re.compile(r"curl\b.*\|\s*(?:sh|bash)", re.IGNORECASE | re.DOTALL),
+    re.compile(r"wget\b.*\|\s*(?:sh|bash)", re.IGNORECASE | re.DOTALL),
+    re.compile(r"base64\s+-d\b.*\|\s*(?:sh|bash|python)", re.IGNORECASE | re.DOTALL),
+    re.compile(r"(?:api[_-]?key|secret|token)\s*=", re.IGNORECASE),
 ]
 
 

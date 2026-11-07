@@ -63,6 +63,61 @@ class NewSessionPolicy:
         return None
 
 
+async def reserve_native_route(authority, source, *, principal_id, request_id, fence=None):
+    """Apply opt-in policy before the native FIFO chooses its owner, never on replay.
+
+    The route admission lock already orders native inputs. An existing owner's mutation/claim
+    locks also fence app submissions and claims during the policy decision. Keep those locks in
+    the tracked task so cancellation cannot release them while the store transition is running.
+    """
+    import asyncio
+    from contextlib import nullcontext
+    from gateway.session_runtime_workers import track_mutation
+    from hermes_state_runtime import find_session_admission, list_session_admissions
+
+    store = authority.runner.session_store
+    load_policy = getattr(authority.runner, '_load_new_session_policy', None)
+
+    def reserve(policy):
+        if fence is not None:
+            fence()
+        if policy is not None and policy.mode != 'none':
+            entry = store.lookup_by_session_key(store._generate_session_key(source))
+            if entry is not None:
+                owner = authority.logical_owner(entry.session_id)
+                # Queued/unknown input owns its conversation just as a running claim does.
+                # A terminal redelivery must reach the ledger's digest check, not a new owner.
+                if (list_session_admissions(authority.db, session_id=owner)
+                        or find_session_admission(authority.db, principal_id=principal_id,
+                                                  session_id=owner, request_id=request_id)
+                        or store._local_receipt_target(entry) is not None or store._api_bound(entry)):
+                    policy = None
+        if policy is None or policy.mode == 'none':
+            return authority._reserve_route(source)
+        return authority._reserve_route(source, reset_policy=policy)
+
+    async def run():
+        policy = (await asyncio.to_thread(load_policy, source)
+                  if callable(load_policy) and source.platform not in (Platform.LOCAL, Platform.API_SERVER)
+                  else None)
+        # Default-off deployments retain the old reservation path without extra store reads.
+        if policy is None or policy.mode == 'none':
+            return await asyncio.to_thread(reserve, None)
+        entry = await asyncio.to_thread(store.lookup_by_session_key, store._generate_session_key(source))
+        owner = await asyncio.to_thread(authority.logical_owner, entry.session_id) if entry else None
+        live = authority.sessions.get(owner)
+        # Compression holds claim_gate across an LLM call: busy input must still commit,
+        # but cannot rotate that conversation. Free locks are acquired below without yielding.
+        if live is not None and (live.claim_gate.locked() or live.mutation_lock.locked()):
+            return await asyncio.to_thread(reserve, None)
+        # Match _claim_next's order; reversing it deadlocks admission against a claim.
+        async with live.claim_gate if live is not None else nullcontext():
+            async with live.mutation_lock if live is not None else nullcontext():
+                return await asyncio.to_thread(reserve, policy)
+
+    return await asyncio.shield(track_mutation(authority, run()))
+
+
 class GatewayNewSessionMixin:
     def _load_new_session_policy(self, source):
         from gateway.run import _load_gateway_config

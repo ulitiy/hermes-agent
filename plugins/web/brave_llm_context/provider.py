@@ -8,7 +8,7 @@ results shaped for LLM context.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from agent.web_search_provider import WebSearchProvider
 from plugins.web._common import provider_env
@@ -47,7 +47,7 @@ def _compact_snippets(snippets: Any) -> str:
     else:
         snippets_iter = []
 
-    parts: List[str] = []
+    parts: list[str] = []
     seen: set[str] = set()
     for item in snippets_iter:
         text = " ".join(str(item or "").split())
@@ -77,7 +77,7 @@ def _age_label(raw_age: Any) -> str:
 
 
 def _source_suffix(source: Mapping[str, Any]) -> str:
-    suffix_parts: List[str] = []
+    suffix_parts: list[str] = []
     hostname = str(source.get("hostname") or "").strip()
     age = _age_label(source.get("age"))
     if hostname:
@@ -158,7 +158,7 @@ class BraveLLMContextWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         import httpx
 
         api_key = provider_env("BRAVE_SEARCH_API_KEY").strip()
@@ -235,7 +235,7 @@ class BraveLLMContextWebSearchProvider(WebSearchProvider):
         if not isinstance(sources, Mapping):
             sources = {}
 
-        web_results: List[Dict[str, Any]] = []
+        web_results: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for item in _iter_grounding_items(grounding):
             url = str(item.get("url") or "").strip()
@@ -264,7 +264,7 @@ class BraveLLMContextWebSearchProvider(WebSearchProvider):
 
         return {"success": True, "data": {"web": web_results}}
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Brave Search LLM Context",
             "badge": "search-only",

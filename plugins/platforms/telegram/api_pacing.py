@@ -27,7 +27,7 @@ class TelegramApiPacingMixin:
         if isinstance(raw, timedelta):
             raw = raw.total_seconds()
         if raw is None:
-            match = re.search(r"retry\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)", str(exc), re.I)
+            match = re.search(r"retry\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)", str(exc), re.IGNORECASE)
             raw = match.group(1) if match else None
         try:
             value = float(raw)

@@ -80,7 +80,7 @@ class PeerPolicy:
     download_artifacts: bool = True
 
     @classmethod
-    def from_mapping(cls, peer_id: str, raw: dict[str, Any]) -> "PeerPolicy":
+    def from_mapping(cls, peer_id: str, raw: dict[str, Any]) -> PeerPolicy:
         token_env = str(raw.get("token_env") or raw.get("bearer_token_env") or "").strip()
         token_sha = str(raw.get("token_sha256") or raw.get("bearer_token_sha256") or "").strip()
         # Escape hatch for tests/prototypes only. Prefer token_sha256 or token_env.
@@ -147,7 +147,7 @@ class SidecarConfig:
     allow_insecure_local: bool = False
 
     @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> "SidecarConfig":
+    def from_mapping(cls, raw: dict[str, Any]) -> SidecarConfig:
         peers_raw = raw.get("peers") or {}
         peers: dict[str, PeerPolicy] = {}
         if isinstance(peers_raw, dict):

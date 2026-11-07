@@ -28,7 +28,8 @@ class ModelPeer(BaseHTTPRequestHandler):
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'index': 0, 'id': 'owned-clarify', 'type': 'function', 'function': {
                     'name': 'clarify', 'arguments': json.dumps({'questions': [
-                        {'question': 'Pick a color', 'choices': ['blue', 'green']}]})}}]}
+                        {'question': 'Pick a color', 'choices': ['blue', 'green'],
+                         'context': 'Choose the report color: blue is muted; green is more prominent.'}]})}}]}
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
         self.end_headers()

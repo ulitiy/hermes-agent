@@ -265,7 +265,7 @@ class TestStaleSessionLockSelfHeal:
 
         await adapter.handle_message(_make_event("first"))
         await asyncio.wait_for(start_hook_entered.wait(), timeout=1.0)
-        await asyncio.sleep(0.02)
+        adapter._session_guard_started_at[sk] -= 1.0
 
         # The next inbound event should classify the owner task as pre-handler
         # wedged, cancel it, clear the guard, and dispatch the fresh message.
@@ -306,7 +306,7 @@ class TestStaleSessionLockSelfHeal:
 
         await adapter.handle_message(_make_event("first"))
         await asyncio.wait_for(first_handler_called.wait(), timeout=1.0)
-        await asyncio.sleep(0.02)
+        adapter._session_guard_started_at[sk] -= 1.0
 
         assert adapter._session_lock_stale_reason(sk) == "pre_handler_task_stalled"
 
@@ -344,7 +344,7 @@ class TestStaleSessionLockSelfHeal:
 
         await adapter.handle_message(_make_event("first"))
         await asyncio.wait_for(handler_entered.wait(), timeout=1.0)
-        await asyncio.sleep(0.02)
+        adapter._session_guard_started_at[sk] -= 1.0
 
         await adapter.handle_message(_make_event("second"))
         await asyncio.sleep(0)
