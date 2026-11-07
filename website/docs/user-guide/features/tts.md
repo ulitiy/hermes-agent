@@ -599,6 +599,26 @@ When **no provider has ever been selected**, Hermes auto-detects from what's ava
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
 
+To opt into one backup provider after a failed transcription, configure:
+
+```yaml
+stt:
+  provider: elevenlabs
+  fallback_provider: openai
+  openai:
+    model: whisper-1
+  fallback_notice: '⚠️ Speech recognition: ElevenLabs → OpenAI (backup).'
+```
+
+The backup needs its own credentials and uses its own model, preprocessing and
+upload policy. Each new recording starts with the primary again. The gateway
+sends the optional localized notice (or a provider-labelled default) separately
+to the originating chat/topic, even with transcript echo off; it is never added
+to the user's speech. If both providers fail, the audio remains untranscribed.
+Disabled STT and invalid files do not trigger backup uploads. Leave
+`fallback_provider` empty to disable this explicit recovery. Without it, the
+gateway's existing installed-local recovery remains available.
+
 ### STT custom command providers
 
 If the STT engine you want isn't natively supported (Doubao ASR, NVIDIA Parakeet, a whisper.cpp build, an open-source SenseVoice CLI, anything else that exposes a shell command), wire it in as a **command-type provider** without writing any Python. Hermes runs your shell command against the audio file and reads back the transcript.

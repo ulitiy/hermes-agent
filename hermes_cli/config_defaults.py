@@ -1137,6 +1137,9 @@ DEFAULT_CONFIG = {
         # Separate transcript audit before the reply; opt-in to avoid duplicate quotes.
         "send_transcription": False,
         "send_transcription_header": "",
+        # Explicit opt-in: at most one backup provider, with independent model/settings.
+        "fallback_provider": "",
+        "fallback_notice": "",  # optional localized gateway notice, separate from speech
         # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
         # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one
         # overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto; "es", ...

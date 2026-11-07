@@ -6337,6 +6337,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         if status == "unreadable":  # only images that fail validation reach here
             event.text = self._append_observed_note(event.text, "[Observed Telegram attachment could not be read, not cached.]")
             return
+        if status == "failed":
+            event.text = self._append_observed_note(event.text, "[Observed Telegram attachment could not be downloaded or cached.]")
+            return
         if status == "ok":
             event.media_urls = []
             event.media_types = []
@@ -6361,6 +6364,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             self._attach_cached(
                 event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
                 "[Telegram] Cached replied-to %s at %s")
+        elif status != "none":
+            event.text = self._append_observed_note(
+                event.text, "[Replied-to attachment could not be downloaded or cached.]")
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""

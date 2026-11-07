@@ -1150,6 +1150,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.session_ingress import executing_admission
         if not event.allow_gateway_control or getattr(event, "_fifo_only", False) or executing_admission.get():
             return None
+        status_reply = self._busy_status_ping_reply(event, _quick_key)
+        if status_reply is not None:
+            return status_reply
         _reply = self._hm_update_prompt_reply(event, _quick_key)
         if _reply is None:
             _reply = await self._hm_clarify_reply(event, source, _quick_key)
@@ -1733,6 +1736,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if not self._pending_event_audio_paths(event):
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter is not None:
+            metadata = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            await self._echo_pending_stt_transcripts_once(
+                event, adapter, event.source, successful_transcripts, metadata=metadata)
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 
     def _consume_pending_native_image_paths(self, session_key: str) -> list[str]:

@@ -689,6 +689,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 self._schedule(
                     retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
+            # The tool still returns to the agent after expiry/delivery failure.
+            # Release the status pause before its next (possibly slow) tool;
+            # this is not permission to reopen an unanswered native prompt.
+            try:
+                ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
+            except Exception:
+                logger.debug("resume_typing_for_chat after unanswered clarify failed", exc_info=True)
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is

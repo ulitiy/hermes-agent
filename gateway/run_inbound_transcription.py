@@ -17,7 +17,7 @@ class GatewayInboundTranscriptionMixin:
     """STT enrichment and the once-only echo of pending voice transcripts."""
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: list[str], clip_memo: Optional[dict] = None
+        self, user_text: str, audio_paths: list[str], clip_memo: Optional[dict] = None, *, source=None
     ) -> tuple[str, list[str]]:
         """Transcribe voice clips with the configured STT provider and prepend the transcripts →
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
@@ -51,7 +51,7 @@ class GatewayInboundTranscriptionMixin:
                 else:
                     logger.debug("Transcribing user voice: %s", path)
                     transcript, note = await self._transcribe_one_clip(
-                        path, transcribe_audio, transcribe_audio_local_fallback,
+                        path, transcribe_audio, transcribe_audio_local_fallback, source=source,
                     )
                     if clip_memo is not None:
                         clip_memo[path] = (transcript, note)
@@ -92,14 +92,15 @@ class GatewayInboundTranscriptionMixin:
         if clip_memo is None:
             clip_memo = {}
             event._gateway_pending_stt_clips = clip_memo
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, clip_memo)
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+            text, audio_paths, clip_memo, source=event.source)
         # A voice note merged in during the await dropped a cache that did not exist yet; re-run on
         # the merged media rather than publish a transcript that silently omits the new note.
         while self._pending_event_audio_paths(event) != audio_paths:
             audio_paths = self._pending_event_audio_paths(event)
             text = user_text if user_text is not None else (getattr(event, "text", "") or "")
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-                text, audio_paths, clip_memo,
+                text, audio_paths, clip_memo, source=event.source,
             )
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
@@ -162,10 +163,28 @@ class GatewayInboundTranscriptionMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
+    async def _send_stt_fallback_notice(self, result, source) -> None:
+        """Out-of-band provenance, once per attempted clip, never quoted as user speech."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        notice = result.get("fallback_notice")
+        if not notice or source is None or not automatic_notices_allowed(source):
+            return
+        adapter = self._delivery_adapter_for(source)
+        if adapter is not None:
+            try:
+                await adapter.send(source.chat_id, notice, metadata=self._thread_metadata_for_source(source))
+            except Exception:
+                logger.warning("STT fallback notice delivery failed (non-fatal)", exc_info=True)
+
+    async def _transcribe_one_clip(
+        self, path: str, transcribe_audio, transcribe_audio_local_fallback, *, source=None,
+    ) -> tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
+        # Preserve upstream installed-local recovery only without an explicit
+        # backup attempt: a named fallback is the operator's complete policy.
+        await self._send_stt_fallback_notice(result, source)
+        if not result.get("success") and not result.get("fallback_from"):
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
                 logger.info("Configured STT failed for %s; recovered with local STT", path)

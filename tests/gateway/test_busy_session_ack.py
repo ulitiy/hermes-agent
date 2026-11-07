@@ -270,7 +270,7 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"], ANY
+            "", ["/tmp/follow-up.ogg"], ANY, source=event.source
         )
         agent.steer.assert_called_once()
         injected = agent.steer.call_args.args[0]

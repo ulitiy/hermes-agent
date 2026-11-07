@@ -932,6 +932,39 @@ class GatewayBusySessionMixin:
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
+    def _busy_status_ping_reply(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        """A bare human Telegram ping observes the run; it is never a new instruction."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        state = self._peek_session_state(session_key)
+        if (event.source.platform != Platform.TELEGRAM or event.message_type != MessageType.TEXT
+                or event.internal or not event.allow_gateway_control or event.media_urls
+                or getattr(event, "_fifo_only", False) or self._draining
+                or not automatic_notices_allowed(event.source) or state is None or not state.turn.agent):
+            return None
+        ping = (event.text or "").strip().casefold().rstrip("!? .…")
+        if ping not in {"эй", "ping"}:
+            return None
+        russian = ping == "эй"
+        agent = state.turn.agent
+        if agent is _AGENT_PENDING_SENTINEL:
+            return "⏳ Я здесь. Текущая задача запускается." if russian else "⏳ I'm here. The current task is starting."
+        from tools.approval import has_blocking_approval
+        if has_blocking_approval(session_key):
+            return "⏳ Я здесь. Жду подтверждения команды." if russian else "⏳ I'm here. Waiting for command approval."
+        from tools.clarify_gateway import get_pending_for_session
+        if get_pending_for_session(session_key, include_choice_prompts=True) is not None:
+            return "⏳ Я здесь. Жду ответа на вопрос выше." if russian else "⏳ I'm here. Waiting for your answer above."
+        message = ("⏳ Я здесь. Текущая задача продолжается — не отменяю её."
+                   if russian else "⏳ I'm here. The current task is still running — not cancelling it.")
+        try:
+            tool = agent.get_activity_summary().get("current_tool")
+            if tool:
+                message += f"\n{'Сейчас' if russian else 'Current tool'}: {tool}"
+        except Exception:
+            logger.debug("Busy status summary unavailable", exc_info=True)
+        return message
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
@@ -958,6 +991,16 @@ class GatewayBusySessionMixin:
         if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
+
+        status_reply = self._busy_status_ping_reply(event, session_key)
+        if status_reply is not None:
+            adapter = self._delivery_adapter_for(event.source)
+            if adapter is not None:
+                try:
+                    await self._send_busy_reply(event, adapter, status_reply)
+                except Exception:
+                    logger.debug("Busy status delivery failed (non-fatal)", exc_info=True)
+            return True  # A failed notice is still NOT an interrupt/steer/queue.
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping

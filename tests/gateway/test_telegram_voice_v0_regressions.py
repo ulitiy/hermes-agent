@@ -290,7 +290,7 @@ async def test_voice_note_merged_during_pending_stt_is_transcribed():
     stt_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_enrich(text, paths, _clip_memo=None):
+    async def fake_enrich(text, paths, _clip_memo=None, source=None):
         stt_started.set()
         await release.wait()
         transcripts = [f"<{Path(p).name}>" for p in paths]
@@ -324,7 +324,7 @@ async def test_caption_of_voice_note_merged_during_pending_stt_is_kept():
     stt_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_enrich(text, paths, _clip_memo=None):
+    async def fake_enrich(text, paths, _clip_memo=None, source=None):
         stt_started.set()
         await release.wait()
         transcripts = [f"<{Path(p).name}>" for p in paths]
@@ -367,7 +367,7 @@ async def test_burst_of_merged_voice_notes_transcribes_each_clip_once():
     burst = ["/tmp/B.ogg", "/tmp/C.ogg", "/tmp/D.ogg"]
     calls = []
 
-    async def fake_clip(path, *_stt):
+    async def fake_clip(path, *_stt, source=None):
         calls.append(Path(path).name)
         if burst:  # the next note of the burst arrives while this clip is being transcribed
             merge_pending_message_event(pending, "k", _voice_event(source, [burst.pop(0)]))

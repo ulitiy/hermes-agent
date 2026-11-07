@@ -126,10 +126,10 @@ _THREE_QUESTIONS = [{"qid": f"q{i}", "question": q, "choices": ["a", "b"], "mult
 @pytest.mark.parametrize("answers,asked,payload,resumed", [
     # Nobody answers question 1: the batch ends there instead of re-asking — every further
     # question used to cost another full clarify_timeout — and reports the walk-away.
-    ((), ["One?"], {"answers": {}, "outcome": "timed_out", "notice": "[user did not respond within 0m]"}, 0),
+    ((), ["One?"], {"answers": {}, "outcome": "timed_out", "notice": "[user did not respond within 0m]"}, 1),
     # Answers already given survive; the unanswered question is not invented.
     (("use postgres",), ["One?", "Two?"],
-     {"answers": {"q0": "use postgres"}, "outcome": "timed_out", "notice": "[user did not respond within 0m]"}, 0),
+     {"answers": {"q0": "use postgres"}, "outcome": "timed_out", "notice": "[user did not respond within 0m]"}, 1),
     # A fully answered batch re-arms typing once, at the end: between two cards the re-arm
     # would only open a bubble the next question's boundary finalizes.
     (("one", "two", "three"), ["One?", "Two?", "Three?"],

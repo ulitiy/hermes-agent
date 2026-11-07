@@ -236,6 +236,9 @@ _EXPLICIT_RESOLVERS = {
 def _resolve_explicit_provider(provider: str) -> str:
     """Explicit ``stt.provider`` -> usable name or ``"none"``; unknown names pass through untouched
     so the dispatcher fails with the provider-not-registered message."""
+    # The managed subscription uses the OpenAI audio backend.
+    if isinstance(provider, str) and provider.strip().lower() == "nous":
+        provider = "openai"
     resolver = _EXPLICIT_RESOLVERS.get(provider)
     if resolver is not None:
         return resolver()
@@ -253,9 +256,6 @@ def _get_provider(stt_config: dict) -> str:
         return "none"
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
-    # The managed "Nous Subscription" selection is the OpenAI backend routed via the managed gateway.
-    if isinstance(provider, str) and provider.strip().lower() == "nous":
-        provider = "openai"
     if explicit and provider == "local":
         # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every install, so only a
         # raw config.yaml selection counts as explicit; otherwise autodetect (local-first anyway).
@@ -444,6 +444,39 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
+    result = _transcribe_provider_audio(file_path, provider, stt_config, model, source)
+    if result.get("success"):
+        return result
+    # Another upload/spend is opt-in; a new recording always starts with primary.
+    fallback = stt_config.get("fallback_provider")
+    if not isinstance(fallback, str):
+        return result
+    fallback = fallback.strip().lower()
+    primary = str(stt_config.get("provider") or provider).strip().lower()
+    if not fallback or fallback in {"none", primary, provider}:
+        return result
+    fallback_config = {**stt_config, "provider": fallback}
+    # Start from the original prepared clip, not primary's trimmed/converted
+    # temporary file. The backup owns its model, hooks, upload caps and chunking.
+    backup = _transcribe_provider_audio(
+        file_path, _resolve_explicit_provider(fallback), fallback_config, None, source)
+    notice = stt_config.get("fallback_notice")
+    if not isinstance(notice, str) or not notice.strip():
+        notice = f"⚠️ Speech recognition fallback: {primary} → {fallback}."
+    backup = {**backup, "fallback_from": primary, "fallback_notice": notice}
+    if not backup.get("success"):
+        backup["error"] = (
+            f"Primary {primary}: {result.get('error', 'transcription failed')}; "
+            f"fallback {fallback}: {backup.get('error', 'transcription failed')}")
+    logger.info("STT fallback %s -> %s: success=%s", primary, fallback, backup.get("success"))
+    return backup
+
+
+def _transcribe_provider_audio(
+    file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str],
+    source: Optional[str],
+) -> dict[str, Any]:
+    """One provider attempt, including its preprocessing and remote upload policy."""
     remote = not _is_local_stt_provider(provider, stt_config)
     with ExitStack() as cleanup:
         # Never overwrite a neighboring WAV or leave converted voice notes behind.

@@ -50,7 +50,8 @@ class GatewayVoiceMixin:
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
-        message_text, successful_transcripts = await self._enrich_message_with_transcription(message_text, audio_paths)
+        message_text, successful_transcripts = await self._enrich_message_with_transcription(
+            message_text, audio_paths, source=source)
         # Mark no-echo only after a successful send, leaving failed sends retryable.
         if successful_transcripts and self._should_echo_stt_transcripts():
             adapter = self._delivery_adapter_for(source)
