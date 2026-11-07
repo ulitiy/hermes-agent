@@ -101,6 +101,12 @@ class RangeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+class RangeServer(HTTPServer):
+    # Admit the downloader's eight-request burst before this serial fixture
+    # finishes serving its first range; backlog pressure is not under test.
+    request_queue_size = 16
+
+
 @pytest.fixture
 def dl_server():
     RangeHandler.payloads = {}
@@ -110,7 +116,7 @@ def dl_server():
     RangeHandler.no_range = False
     RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
-    server = HTTPServer(("127.0.0.1", 0), RangeHandler)
+    server = RangeServer(("127.0.0.1", 0), RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
